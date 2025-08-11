@@ -670,7 +670,8 @@
         let audioQueue = [];
         let isPlayingAudio = false;
         let audioStreamBuffer = new Map(); // 按用户ID存储音频流
-        let audioWorklets = new Map(); // 音频处理器
+        let mediaSourceStreams = new Map(); // Media Source Extensions
+        let audioElements = new Map(); // 音频元素
         
         // DOM元素
         const userListEl = document.getElementById('userList');
@@ -2112,8 +2113,8 @@
             isLiveVoiceActive = false;
             liveVoiceBtnEl.textContent = '📞 实时语音';
             
-            // 清理音频流缓冲区
-            audioStreamBuffer.clear();
+            // 清理所有音频流
+            cleanupAllAudioStreams();
             
             // 清理音频指示器
             if (audioIndicatorElement && audioIndicatorElement.parentNode) {
@@ -2272,24 +2273,30 @@
         // 处理音频流数据
         async function processAudioStream(senderId, audioData) {
             try {
-                // 初始化音频上下文
-                const audioContext = await initPlaybackAudioContext();
-                
-                // 为每个发送者创建独立的音频流处理器
-                if (!audioStreamBuffer.has(senderId)) {
-                    audioStreamBuffer.set(senderId, {
-                        chunks: [],
-                        isPlaying: false,
-                        lastPlayTime: 0
-                    });
+                // 为每个发送者创建或获取音频流
+                if (!mediaSourceStreams.has(senderId)) {
+                    await createAudioStreamForUser(senderId);
                 }
                 
-                const streamData = audioStreamBuffer.get(senderId);
-                streamData.chunks.push(audioData);
-                
-                // 如果当前没有在播放，开始播放队列中的音频
-                if (!streamData.isPlaying) {
-                    playAudioQueue(senderId, audioContext);
+                const streamData = mediaSourceStreams.get(senderId);
+                if (streamData && streamData.sourceBuffer && !streamData.sourceBuffer.updating) {
+                    try {
+                        // 将音频数据添加到源缓冲区
+                        streamData.sourceBuffer.appendBuffer(audioData);
+                        streamData.lastUpdateTime = Date.now();
+                        
+                        console.log(`为用户 ${senderId} 添加了 ${audioData.length} 字节音频数据`);
+                    } catch (error) {
+                        console.error('添加音频数据到源缓冲区失败:', error);
+                        // 如果MSE失败，降级到简单的音频播放
+                        await fallbackSimpleAudioPlay(audioData);
+                    }
+                } else {
+                    // 如果源缓冲区正在更新，将数据加入队列
+                    if (!streamData.pendingData) {
+                        streamData.pendingData = [];
+                    }
+                    streamData.pendingData.push(audioData);
                 }
                 
                 // 显示音频接收指示器
@@ -2297,109 +2304,131 @@
                 
             } catch (error) {
                 console.error('处理音频流失败:', error);
+                // 降级到简单播放
+                await fallbackSimpleAudioPlay(audioData);
             }
         }
         
-        // 播放音频队列
-        async function playAudioQueue(senderId, audioContext) {
-            const streamData = audioStreamBuffer.get(senderId);
-            if (!streamData || streamData.chunks.length === 0) {
-                return;
-            }
-            
-            streamData.isPlaying = true;
-            
+        // 为用户创建音频流
+        async function createAudioStreamForUser(senderId) {
             try {
-                // 取出第一个音频块
-                const audioChunk = streamData.chunks.shift();
-                
-                // 尝试解码并播放
-                await playAudioChunk(audioChunk, audioContext);
-                
-                // 继续播放队列中的下一个音频块
-                if (streamData.chunks.length > 0) {
-                    setTimeout(() => {
-                        playAudioQueue(senderId, audioContext);
-                    }, 50); // 50ms间隔
-                } else {
-                    streamData.isPlaying = false;
+                // 检查浏览器是否支持MSE
+                if (!window.MediaSource || !MediaSource.isTypeSupported('audio/webm; codecs="opus"')) {
+                    console.log('浏览器不支持MSE，使用降级方案');
+                    return;
                 }
                 
-            } catch (error) {
-                console.error('播放音频队列失败:', error);
-                streamData.isPlaying = false;
+                const mediaSource = new MediaSource();
+                const audio = new Audio();
+                audio.src = URL.createObjectURL(mediaSource);
+                audio.volume = 0.8;
+                audio.autoplay = true;
                 
-                // 如果解码失败，尝试播放下一个块
-                if (streamData.chunks.length > 0) {
-                    setTimeout(() => {
-                        playAudioQueue(senderId, audioContext);
-                    }, 100);
-                }
-            }
-        }
-        
-        // 播放单个音频块
-        async function playAudioChunk(audioData, audioContext) {
-            try {
-                // 创建音频blob
-                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
-                const arrayBuffer = await audioBlob.arrayBuffer();
+                // 存储音频元素
+                audioElements.set(senderId, audio);
                 
-                // 尝试解码音频数据
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                
-                // 创建音频源并播放
-                const source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                
-                // 添加音量控制
-                const gainNode = audioContext.createGain();
-                gainNode.gain.value = 0.8;
-                
-                source.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-                
-                // 播放音频
-                source.start(0);
-                
-                console.log('成功播放音频块');
-                
-            } catch (error) {
-                // 如果Web Audio API解码失败，尝试使用HTML Audio元素
-                console.log('Web Audio API解码失败，尝试HTML Audio播放');
-                await fallbackHtmlAudioPlay(audioData);
-            }
-        }
-        
-        // 降级到HTML Audio播放
-        async function fallbackHtmlAudioPlay(audioData) {
-            try {
-                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = new Audio(audioUrl);
-                
-                audio.volume = 0.5; // 降低音量避免重叠
-                audio.preload = 'auto';
-                
-                // 设置清理
-                const cleanup = () => {
-                    URL.revokeObjectURL(audioUrl);
-                    audio.removeEventListener('ended', cleanup);
-                    audio.removeEventListener('error', cleanup);
+                const streamData = {
+                    mediaSource: mediaSource,
+                    sourceBuffer: null,
+                    audio: audio,
+                    pendingData: [],
+                    lastUpdateTime: Date.now()
                 };
                 
-                audio.addEventListener('ended', cleanup);
-                audio.addEventListener('error', cleanup);
+                mediaSource.addEventListener('sourceopen', () => {
+                    try {
+                        const sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
+                        streamData.sourceBuffer = sourceBuffer;
+                        
+                        // 处理更新结束事件
+                        sourceBuffer.addEventListener('updateend', () => {
+                            // 处理待处理的数据
+                            if (streamData.pendingData && streamData.pendingData.length > 0) {
+                                const nextData = streamData.pendingData.shift();
+                                if (!sourceBuffer.updating) {
+                                    try {
+                                        sourceBuffer.appendBuffer(nextData);
+                                    } catch (error) {
+                                        console.error('处理待处理数据失败:', error);
+                                    }
+                                }
+                            }
+                        });
+                        
+                        console.log(`为用户 ${senderId} 创建了MSE音频流`);
+                        
+                    } catch (error) {
+                        console.error('创建源缓冲区失败:', error);
+                    }
+                });
                 
-                // 播放音频
-                await audio.play();
-                console.log('HTML Audio播放成功');
+                mediaSourceStreams.set(senderId, streamData);
                 
             } catch (error) {
-                console.log('HTML Audio播放也失败:', error);
-                // 最后的降级方案：只显示指示器
-                showAudioReceiveIndicator();
+                console.error('创建音频流失败:', error);
             }
+        }
+        
+        // 简单的音频播放降级方案
+        async function fallbackSimpleAudioPlay(audioData) {
+            try {
+                // 使用Web Audio API生成简单的提示音
+                const audioContext = await initPlaybackAudioContext();
+                
+                // 生成一个简短的提示音表示收到音频
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+                gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.1);
+                
+                console.log('播放音频接收提示音');
+                
+            } catch (error) {
+                console.log('提示音播放失败:', error);
+            }
+        }
+        
+        // 清理所有音频流
+        function cleanupAllAudioStreams() {
+            // 清理Media Source Extensions
+            for (const [senderId, streamData] of mediaSourceStreams) {
+                try {
+                    if (streamData.mediaSource && streamData.mediaSource.readyState === 'open') {
+                        streamData.mediaSource.endOfStream();
+                    }
+                    if (streamData.audio) {
+                        streamData.audio.pause();
+                        streamData.audio.src = '';
+                    }
+                } catch (error) {
+                    console.error(`清理用户 ${senderId} 的音频流失败:`, error);
+                }
+            }
+            mediaSourceStreams.clear();
+            
+            // 清理音频元素
+            for (const [senderId, audio] of audioElements) {
+                try {
+                    audio.pause();
+                    audio.src = '';
+                } catch (error) {
+                    console.error(`清理用户 ${senderId} 的音频元素失败:`, error);
+                }
+            }
+            audioElements.clear();
+            
+            // 清理缓冲区
+            audioStreamBuffer.clear();
+            
+            console.log('已清理所有音频流');
         }
         
 
