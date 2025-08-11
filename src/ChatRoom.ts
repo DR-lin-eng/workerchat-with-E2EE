@@ -85,6 +85,9 @@ export class ChatRoom {
             case 'voice':
                 this.handleVoiceMessage(webSocket, message);
                 break;
+            case 'liveAudio':
+                this.handleLiveAudioMessage(webSocket, message);
+                break;
             case 'fileStatus':
                 this.handleFileStatusRequest(webSocket, message);
                 break;
@@ -348,6 +351,39 @@ export class ChatRoom {
         this.broadcast(notification);
     }
 
+    private handleLiveAudioMessage(webSocket: WebSocket, message: LiveAudioMessage): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 验证实时音频数据
+        if (!message.encryptedAudioData) {
+            this.sendError(webSocket, 'Invalid live audio data');
+            return;
+        }
+
+        // 检查音频数据大小限制 (实时音频块应该较小)
+        const maxChunkSize = 1024 * 1024; // 1MB
+        const estimatedSize = message.encryptedAudioData.length * 0.75;
+        if (estimatedSize > maxChunkSize) {
+            this.sendError(webSocket, 'Live audio chunk too large');
+            return;
+        }
+
+        // 广播实时音频消息
+        const notification: LiveAudioNotification = {
+            type: 'liveAudioNotification',
+            senderId: sender.id,
+            encryptedAudioData: message.encryptedAudioData,
+            timestamp: message.timestamp || Date.now()
+        };
+
+        // 只广播给其他用户，不发送给发送者自己
+        this.broadcastToOthers(notification, webSocket);
+    }
+
     private handleFileStatusRequest(webSocket: WebSocket, message: FileStatusRequest): void {
         const sender = this.users.get(webSocket);
         if (!sender) {
@@ -385,6 +421,20 @@ export class ChatRoom {
             } catch (error) {
                 this.sessions.delete(session);
                 this.users.delete(session);
+            }
+        }
+    }
+
+    private broadcastToOthers(message: any, excludeSession: WebSocket): void {
+        const messageStr = JSON.stringify(message);
+        for (const session of this.sessions) {
+            if (session !== excludeSession) {
+                try {
+                    session.send(messageStr);
+                } catch (error) {
+                    this.sessions.delete(session);
+                    this.users.delete(session);
+                }
             }
         }
     }

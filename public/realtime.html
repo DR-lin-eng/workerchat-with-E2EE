@@ -419,8 +419,58 @@
             background: var(--warning);
         }
         
-        #fileInput {
+        #fileInput, #imageInput, #videoInput {
             display: none;
+        }
+        
+        .media-preview {
+            max-width: 300px;
+            max-height: 200px;
+            border-radius: 8px;
+            margin: 8px 0;
+        }
+        
+        .video-preview {
+            max-width: 300px;
+            max-height: 200px;
+            border-radius: 8px;
+            margin: 8px 0;
+        }
+        
+        .live-voice-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 10px;
+            background: rgba(255, 165, 0, 0.2);
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        
+        .live-voice-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--success);
+            animation: pulse 1s infinite;
+        }
+        
+        .live-voice-indicator.speaking {
+            background: var(--danger);
+        }
+        
+        .volume-meter {
+            width: 100px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .volume-bar {
+            height: 100%;
+            background: var(--success);
+            transition: width 0.1s ease;
         }
         
         .key-management {
@@ -558,8 +608,17 @@
                         <button class="tool-btn" id="fileBtn" title="发送文件">
                             📎 文件
                         </button>
+                        <button class="tool-btn" id="imageBtn" title="发送图片">
+                            🖼️ 图片
+                        </button>
+                        <button class="tool-btn" id="videoBtn" title="发送视频">
+                            🎥 视频
+                        </button>
                         <button class="tool-btn" id="voiceBtn" title="语音消息">
                             🎤 语音
+                        </button>
+                        <button class="tool-btn" id="liveVoiceBtn" title="实时语音">
+                            📞 实时语音
                         </button>
                         <span id="voiceStatus" style="font-size: 0.8em; color: #ccc;"></span>
                     </div>
@@ -569,6 +628,8 @@
             </div>
             
             <input type="file" id="fileInput" multiple>
+            <input type="file" id="imageInput" accept="image/*" multiple>
+            <input type="file" id="videoInput" accept="video/*" multiple>
         </div>
     </div>
     
@@ -596,6 +657,19 @@
         let isRecording = false;
         let recordingStartTime = 0;
         
+        // 实时语音相关
+        let liveAudioStream = null;
+        let liveAudioContext = null;
+        let liveMediaRecorder = null;
+        let isLiveVoiceActive = false;
+        let volumeMeter = null;
+        let liveVoiceInterval = null;
+        
+        // 音频播放相关
+        let playbackAudioContext = null;
+        let audioQueue = [];
+        let isPlayingAudio = false;
+        
         // DOM元素
         const userListEl = document.getElementById('userList');
         const messagesEl = document.getElementById('messages');
@@ -609,8 +683,13 @@
         const notificationEl = document.getElementById('notification');
         const connectionStatusEl = document.getElementById('connectionStatus');
         const fileInputEl = document.getElementById('fileInput');
+        const imageInputEl = document.getElementById('imageInput');
+        const videoInputEl = document.getElementById('videoInput');
         const fileBtnEl = document.getElementById('fileBtn');
+        const imageBtnEl = document.getElementById('imageBtn');
+        const videoBtnEl = document.getElementById('videoBtn');
         const voiceBtnEl = document.getElementById('voiceBtn');
+        const liveVoiceBtnEl = document.getElementById('liveVoiceBtn');
         const voiceStatusEl = document.getElementById('voiceStatus');
         const transferStatusEl = document.getElementById('transferStatus');
         const transferListEl = document.getElementById('transferList');
@@ -990,6 +1069,9 @@
             // 初始化语音功能
             initVoiceSupport();
             
+            // 初始化音频播放上下文（需要用户交互）
+            initAudioContextOnUserInteraction();
+            
             // 绑定事件
             bindEvents();
             
@@ -1012,8 +1094,13 @@
             copyPublicKeyBtn.addEventListener('click', copyPublicKey);
             
             fileBtnEl.addEventListener('click', () => fileInputEl.click());
+            imageBtnEl.addEventListener('click', () => imageInputEl.click());
+            videoBtnEl.addEventListener('click', () => videoInputEl.click());
             fileInputEl.addEventListener('change', handleFileSelect);
+            imageInputEl.addEventListener('change', handleImageSelect);
+            videoInputEl.addEventListener('change', handleVideoSelect);
             voiceBtnEl.addEventListener('click', toggleVoiceRecording);
+            liveVoiceBtnEl.addEventListener('click', toggleLiveVoice);
         }
         
         function getRoomIdFromUrl() {
@@ -1092,6 +1179,9 @@
                     break;
                 case 'voiceNotification':
                     handleVoiceMessage(message);
+                    break;
+                case 'liveAudioNotification':
+                    handleLiveAudio(message);
                     break;
                 case 'error':
                     showNotification(message.message, 'error');
@@ -1187,6 +1277,131 @@
             
             // 清空文件输入
             event.target.value = '';
+        }
+        
+        function handleImageSelect(event) {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+            
+            files.forEach(file => {
+                if (file.type.startsWith('image/')) {
+                    sendMediaFile(file, 'image');
+                } else {
+                    showNotification('请选择图片文件', 'error');
+                }
+            });
+            
+            event.target.value = '';
+        }
+        
+        function handleVideoSelect(event) {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+            
+            files.forEach(file => {
+                if (file.type.startsWith('video/')) {
+                    sendMediaFile(file, 'video');
+                } else {
+                    showNotification('请选择视频文件', 'error');
+                }
+            });
+            
+            event.target.value = '';
+        }
+        
+        function sendMediaFile(file, mediaType) {
+            // 如果只有一个在线用户（除了自己），直接发送
+            const otherUsers = Array.from(users.keys()).filter(id => id !== userId);
+            if (otherUsers.length === 1) {
+                sendFileToUser(otherUsers[0], file);
+                displayMediaMessage(userId, file, mediaType, 'sent');
+            } else if (otherUsers.length > 1) {
+                // 让用户选择发送给谁
+                const userNames = otherUsers.map(id => `${id}: ${getUserName(id)}`).join('\n');
+                const selectedUserId = prompt(`选择发送给哪个用户:\n${userNames}\n\n请输入用户ID:`);
+                if (selectedUserId && users.has(selectedUserId)) {
+                    sendFileToUser(selectedUserId, file);
+                    displayMediaMessage(userId, file, mediaType, 'sent');
+                }
+            } else {
+                showNotification('没有其他在线用户', 'warning');
+            }
+        }
+        
+        function displayMediaMessage(senderId, file, mediaType, direction) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${direction}`;
+            
+            const senderInfo = users.get(senderId) || { name: senderId.slice(24, 40) };
+            const timestamp = new Date().toLocaleTimeString();
+            
+            let mediaContent = '';
+            const fileUrl = URL.createObjectURL(file);
+            
+            if (mediaType === 'image') {
+                mediaContent = `
+                    <img src="${fileUrl}" alt="${file.name}" class="media-preview" onclick="openMediaFullscreen('${fileUrl}', 'image')">
+                    <div style="font-size: 0.8em; margin-top: 5px;">${file.name} (${formatFileSize(file.size)})</div>
+                `;
+            } else if (mediaType === 'video') {
+                mediaContent = `
+                    <video controls class="video-preview" onclick="openMediaFullscreen('${fileUrl}', 'video')">
+                        <source src="${fileUrl}" type="${file.type}">
+                        您的浏览器不支持视频播放
+                    </video>
+                    <div style="font-size: 0.8em; margin-top: 5px;">${file.name} (${formatFileSize(file.size)})</div>
+                `;
+            }
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderInfo.name}</span>
+                    <span class="message-time">${timestamp}</span>
+                </div>
+                ${mediaContent}
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function openMediaFullscreen(url, type) {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.9);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 10000;
+                cursor: pointer;
+            `;
+            
+            let mediaElement;
+            if (type === 'image') {
+                mediaElement = document.createElement('img');
+                mediaElement.src = url;
+                mediaElement.style.cssText = 'max-width: 90%; max-height: 90%; object-fit: contain;';
+            } else if (type === 'video') {
+                mediaElement = document.createElement('video');
+                mediaElement.src = url;
+                mediaElement.controls = true;
+                mediaElement.style.cssText = 'max-width: 90%; max-height: 90%;';
+            }
+            
+            overlay.appendChild(mediaElement);
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    document.body.removeChild(overlay);
+                    URL.revokeObjectURL(url);
+                }
+            });
+            
+            document.body.appendChild(overlay);
         }
         
         function displayFileTransferRequest(senderId, transferId, metadata) {
@@ -1469,6 +1684,34 @@
             });
             
             return encrypted;
+        }
+        
+        async function decryptMessage(encryptedData) {
+            if (!privateKey) {
+                throw new Error('私钥未设置');
+            }
+            
+            try {
+                const encryptedMessage = await openpgp.readMessage({
+                    armoredMessage: encryptedData
+                });
+                
+                const privKey = await openpgp.readPrivateKey({
+                    armoredKey: privateKey
+                });
+                
+                const { data: decrypted } = await openpgp.decrypt({
+                    message: encryptedMessage,
+                    decryptionKeys: privKey,
+                    format: 'binary'
+                });
+                
+                return decrypted;
+                
+            } catch (error) {
+                console.error('解密失败:', error);
+                throw error;
+            }
         }
         
         async function handleEncryptedMessage(message) {
@@ -1780,6 +2023,323 @@
                 console.error('播放语音失败:', error);
                 showNotification('播放语音失败', 'error');
             });
+        }
+        
+        // 实时语音功能
+        async function toggleLiveVoice() {
+            if (isLiveVoiceActive) {
+                stopLiveVoice();
+            } else {
+                await startLiveVoice();
+            }
+        }
+        
+        async function startLiveVoice() {
+            try {
+                liveAudioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    } 
+                });
+                
+                liveAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = liveAudioContext.createMediaStreamSource(liveAudioStream);
+                
+                // 创建音量检测器
+                const analyser = liveAudioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                
+                // 创建媒体录制器用于实时传输
+                liveMediaRecorder = new MediaRecorder(liveAudioStream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                let audioChunks = [];
+                liveMediaRecorder.ondataavailable = async (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                        
+                        // 每收集到一定数据就发送
+                        if (audioChunks.length >= 2) {
+                            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                            await sendLiveAudioChunk(audioBlob);
+                            audioChunks = [];
+                        }
+                    }
+                };
+                
+                // 开始录制，每500ms产生一个数据块
+                liveMediaRecorder.start(500);
+                
+                isLiveVoiceActive = true;
+                liveVoiceBtnEl.textContent = '📞 停止实时语音';
+                liveVoiceBtnEl.style.background = 'var(--danger)';
+                
+                // 显示实时语音控制界面
+                showLiveVoiceControls();
+                
+                // 开始音量监测
+                startVolumeMonitoring(analyser);
+                
+                showNotification('实时语音已开启');
+                
+            } catch (error) {
+                console.error('启动实时语音失败:', error);
+                showNotification('启动实时语音失败: ' + error.message, 'error');
+            }
+        }
+        
+        function stopLiveVoice() {
+            if (liveAudioStream) {
+                liveAudioStream.getTracks().forEach(track => track.stop());
+                liveAudioStream = null;
+            }
+            
+            if (liveAudioContext) {
+                liveAudioContext.close();
+                liveAudioContext = null;
+            }
+            
+            if (liveMediaRecorder && liveMediaRecorder.state !== 'inactive') {
+                liveMediaRecorder.stop();
+                liveMediaRecorder = null;
+            }
+            
+            if (liveVoiceInterval) {
+                clearInterval(liveVoiceInterval);
+                liveVoiceInterval = null;
+            }
+            
+            isLiveVoiceActive = false;
+            liveVoiceBtnEl.textContent = '📞 实时语音';
+            liveVoiceBtnEl.style.background = '';
+            
+            // 隐藏实时语音控制界面
+            hideLiveVoiceControls();
+            
+            showNotification('实时语音已关闭');
+        }
+        
+        async function sendLiveAudioChunk(audioBlob) {
+            try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioData = new Uint8Array(arrayBuffer);
+                
+                // 加密音频数据
+                const encryptedAudioData = await encryptForAllUsers(audioData);
+                
+                const liveAudioMessage = {
+                    type: 'liveAudio',
+                    encryptedAudioData: encryptedAudioData,
+                    timestamp: Date.now()
+                };
+                
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.send(JSON.stringify(liveAudioMessage));
+                }
+                
+            } catch (error) {
+                console.error('发送实时音频失败:', error);
+            }
+        }
+        
+        function showLiveVoiceControls() {
+            const controlsEl = document.createElement('div');
+            controlsEl.id = 'liveVoiceControls';
+            controlsEl.className = 'live-voice-controls';
+            controlsEl.innerHTML = `
+                <div class="live-voice-indicator" id="liveVoiceIndicator"></div>
+                <span>实时语音通话中</span>
+                <div class="volume-meter">
+                    <div class="volume-bar" id="volumeBar"></div>
+                </div>
+            `;
+            
+            // 插入到输入区域上方
+            const inputArea = document.querySelector('.input-area');
+            inputArea.parentNode.insertBefore(controlsEl, inputArea);
+        }
+        
+        function hideLiveVoiceControls() {
+            const controlsEl = document.getElementById('liveVoiceControls');
+            if (controlsEl) {
+                controlsEl.remove();
+            }
+        }
+        
+        function startVolumeMonitoring(analyser) {
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            liveVoiceInterval = setInterval(() => {
+                analyser.getByteFrequencyData(dataArray);
+                
+                // 计算平均音量
+                let sum = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / bufferLength;
+                const volume = (average / 255) * 100;
+                
+                // 更新音量条
+                const volumeBar = document.getElementById('volumeBar');
+                const indicator = document.getElementById('liveVoiceIndicator');
+                
+                if (volumeBar) {
+                    volumeBar.style.width = volume + '%';
+                }
+                
+                if (indicator) {
+                    if (volume > 10) {
+                        indicator.classList.add('speaking');
+                    } else {
+                        indicator.classList.remove('speaking');
+                    }
+                }
+                
+            }, 100);
+        }
+        
+        // 初始化音频播放上下文
+        async function initPlaybackAudioContext() {
+            if (!playbackAudioContext) {
+                playbackAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // 如果上下文被暂停，尝试恢复
+                if (playbackAudioContext.state === 'suspended') {
+                    await playbackAudioContext.resume();
+                }
+            }
+            return playbackAudioContext;
+        }
+        
+        // 在用户交互时初始化音频上下文
+        function initAudioContextOnUserInteraction() {
+            const initOnClick = async () => {
+                try {
+                    await initPlaybackAudioContext();
+                    console.log('音频上下文已初始化');
+                    
+                    // 移除事件监听器，只需要初始化一次
+                    document.removeEventListener('click', initOnClick);
+                    document.removeEventListener('keydown', initOnClick);
+                    document.removeEventListener('touchstart', initOnClick);
+                } catch (error) {
+                    console.error('音频上下文初始化失败:', error);
+                }
+            };
+            
+            // 监听用户交互事件
+            document.addEventListener('click', initOnClick);
+            document.addEventListener('keydown', initOnClick);
+            document.addEventListener('touchstart', initOnClick);
+        }
+        
+        // 处理接收到的实时音频
+        async function handleLiveAudio(message) {
+            if (!privateKey) {
+                return;
+            }
+            
+            try {
+                // 解密音频数据
+                const decryptedData = await decryptMessage(message.encryptedAudioData);
+                const audioData = new Uint8Array(decryptedData);
+                
+                // 尝试使用Web Audio API播放
+                await playAudioWithWebAudioAPI(audioData);
+                
+            } catch (error) {
+                console.error('处理实时音频失败:', error);
+                // 降级到传统音频播放
+                fallbackAudioPlayback(audioData);
+            }
+        }
+        
+        // 使用Web Audio API播放音频
+        async function playAudioWithWebAudioAPI(audioData) {
+            try {
+                const audioContext = await initPlaybackAudioContext();
+                
+                // 创建音频blob
+                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                
+                // 解码音频数据
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // 创建音频源
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                
+                // 播放音频
+                source.start(0);
+                
+                console.log('使用Web Audio API成功播放音频');
+                
+            } catch (error) {
+                console.error('Web Audio API播放失败:', error);
+                throw error;
+            }
+        }
+        
+        // 降级音频播放方法
+        function fallbackAudioPlayback(audioData) {
+            console.log('使用降级音频播放方法');
+            
+            // 尝试不同的音频格式
+            const formats = [
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/ogg;codecs=opus',
+                'audio/ogg'
+            ];
+            
+            let playbackAttempted = false;
+            
+            for (const format of formats) {
+                if (playbackAttempted) break;
+                
+                try {
+                    const audioBlob = new Blob([audioData], { type: format });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audio = new Audio(audioUrl);
+                    
+                    audio.volume = 0.8;
+                    audio.preload = 'auto';
+                    
+                    const playPromise = audio.play();
+                    
+                    if (playPromise !== undefined) {
+                        playPromise.then(() => {
+                            console.log(`成功使用格式播放: ${format}`);
+                            playbackAttempted = true;
+                            
+                            audio.addEventListener('ended', () => {
+                                URL.revokeObjectURL(audioUrl);
+                            });
+                            
+                        }).catch((error) => {
+                            console.log(`格式 ${format} 播放失败:`, error);
+                            URL.revokeObjectURL(audioUrl);
+                        });
+                    }
+                    
+                } catch (error) {
+                    console.log(`格式 ${format} 创建失败:`, error);
+                }
+            }
+            
+            if (!playbackAttempted) {
+                console.warn('所有音频播放方法都失败了');
+                showNotification('音频播放失败，请检查浏览器兼容性', 'error');
+            }
         }
         
         // 页面加载完成后初始化

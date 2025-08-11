@@ -142,6 +142,13 @@ export interface VoiceMessage {
     encryptedVoiceData: string; // 加密的语音数据
 }
 
+// 实时音频消息
+export interface LiveAudioMessage {
+    type: 'liveAudio';
+    encryptedAudioData: string; // 加密的实时音频数据
+    timestamp: number;
+}
+
 // 文件传输状态请求
 export interface FileStatusRequest {
     type: 'fileStatus';
@@ -197,6 +204,14 @@ export interface VoiceNotification {
     voiceId: string;
     metadata: VoiceMetadata;
     encryptedVoiceData: string;
+    timestamp: number;
+}
+
+// 实时音频通知
+export interface LiveAudioNotification {
+    type: 'liveAudioNotification';
+    senderId: string;
+    encryptedAudioData: string;
     timestamp: number;
 }
 
