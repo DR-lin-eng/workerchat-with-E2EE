@@ -1,15 +1,25 @@
-import {UserInfo, RegisterMessage, ChatMessage, RegisteredMessage, UserListMessage, EncryptedMessage, ErrorMessage, UserProfile, UserRole} from "./models";
+import {
+    UserInfo, RegisterMessage, ChatMessage, RegisteredMessage, UserListMessage, 
+    EncryptedMessage, ErrorMessage, UserProfile, UserRole,
+    FileStartMessage, FileChunkMessage, FileCompleteMessage, VoiceMessage,
+    FileStartNotification, FileChunkNotification, FileCompleteNotification, VoiceNotification,
+    FileStatusRequest, FileStatusResponse, FileTransferProgress
+} from "./models";
 import {readKey} from "openpgp";
+
 export class ChatRoom {
     private state: DurableObjectState;
     private users: Map<WebSocket, UserInfo> = new Map();
     private sessions: Set<WebSocket> = new Set();
+    // 文件传输状态跟踪
+    private fileTransfers: Map<string, FileTransferProgress> = new Map();
+    // 文件分片临时存储 (fileId -> Map<chunkIndex, encryptedData>)
+    private fileChunks: Map<string, Map<number, string>> = new Map();
 
     constructor(state: DurableObjectState) {
         this.state = state;
     }
 
-    
     async fetch(request: Request): Promise<Response> {
         if (request.headers.get('Upgrade') !== 'websocket') {
             return new Response('Expected websocket', { status: 400 });
@@ -59,6 +69,21 @@ export class ChatRoom {
             case 'message':
                 this.handleChatMessage(webSocket, message);
                 break;
+            case 'fileStart':
+                this.handleFileStart(webSocket, message);
+                break;
+            case 'fileChunk':
+                this.handleFileChunk(webSocket, message);
+                break;
+            case 'fileComplete':
+                this.handleFileComplete(webSocket, message);
+                break;
+            case 'voice':
+                this.handleVoiceMessage(webSocket, message);
+                break;
+            case 'fileStatus':
+                this.handleFileStatusRequest(webSocket, message);
+                break;
             default:
                 this.sendError(webSocket, `Unknown message type: ${message.type}`);
         }
@@ -71,13 +96,11 @@ export class ChatRoom {
                 return;
             }
 
-            // 验证公钥格式
             if (!this.isValidPGPPublicKey(message.publicKey)) {
                 this.sendError(webSocket, 'Invalid PGP public key format');
                 return;
             }
 
-            // 从公钥中提取用户信息
             const userProfile = await this.extractUserProfile(message.publicKey);
             
             const userInfo: UserInfo = {
@@ -86,20 +109,17 @@ export class ChatRoom {
                 email: userProfile.email,
                 publicKey: message.publicKey,
                 webSocket: webSocket,
-                role: UserRole.GUEST// 默认Guest
+                role: UserRole.GUEST
             };
             
-            // 检查用户是否已存在
             const existingUser = this.findUserById(userInfo.id);
             if (existingUser && existingUser.webSocket !== webSocket) {
-                // 更新现有用户的连接
                 this.users.delete(existingUser.webSocket);
                 existingUser.webSocket.close();
             }
 
             this.users.set(webSocket, userInfo);
 
-            // 发送注册成功响应
             const response: RegisteredMessage = {
                 type: 'registered',
                 profile: {
@@ -110,8 +130,6 @@ export class ChatRoom {
             };
             
             webSocket.send(JSON.stringify(response));
-
-            // 向其他用户广播用户列表更新
             this.broadcastUserList();
 
         } catch (error) {
@@ -147,13 +165,11 @@ export class ChatRoom {
             return;
         }
 
-        // 验证加密消息格式
         if (!this.isValidPGPMessage(message.encryptedData)) {
             this.sendError(webSocket, 'Invalid PGP message format');
             return;
         }
 
-        // 广播加密消息给所有用户
         const broadcastMessage: EncryptedMessage = {
             type: 'encryptedMessage',
             senderId: sender.id,
@@ -164,11 +180,184 @@ export class ChatRoom {
         this.broadcast(broadcastMessage);
     }
 
+    private handleFileStart(webSocket: WebSocket, message: FileStartMessage): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 验证文件元数据
+        if (!message.metadata || !message.metadata.fileId || !message.metadata.fileName) {
+            this.sendError(webSocket, 'Invalid file metadata');
+            return;
+        }
+
+        // 检查文件大小限制 (例如最大5GB)
+        const maxFileSize = 5 * 1024 * 1024 * 1024; // 5GB
+        if (message.metadata.fileSize > maxFileSize) {
+            this.sendError(webSocket, 'File too large');
+            return;
+        }
+
+        // 初始化文件传输状态
+        const fileTransfer: FileTransferProgress = {
+            fileId: message.metadata.fileId,
+            fileName: message.metadata.fileName,
+            fileSize: message.metadata.fileSize,
+            uploadedChunks: new Set(),
+            totalChunks: message.metadata.totalChunks,
+            isComplete: false,
+            chunks: new Map(),
+            metadata: message.metadata
+        };
+
+        this.fileTransfers.set(message.metadata.fileId, fileTransfer);
+        this.fileChunks.set(message.metadata.fileId, new Map());
+
+        // 广播文件开始传输通知
+        const notification: FileStartNotification = {
+            type: 'fileStartNotification',
+            senderId: sender.id,
+            fileId: message.metadata.fileId,
+            metadata: message.metadata,
+            timestamp: Date.now()
+        };
+
+        this.broadcast(notification);
+    }
+
+    private handleFileChunk(webSocket: WebSocket, message: FileChunkMessage): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        const fileTransfer = this.fileTransfers.get(message.fileId);
+        if (!fileTransfer) {
+            this.sendError(webSocket, 'File transfer not found');
+            return;
+        }
+
+        // 验证分片数据
+        if (!message.chunk || !message.encryptedChunk) {
+            this.sendError(webSocket, 'Invalid chunk data');
+            return;
+        }
+
+        // 存储分片
+        const chunkMap = this.fileChunks.get(message.fileId);
+        if (chunkMap) {
+            chunkMap.set(message.chunk.chunkIndex, message.encryptedChunk);
+            fileTransfer.uploadedChunks.add(message.chunk.chunkIndex);
+        }
+
+        // 广播分片通知
+        const notification: FileChunkNotification = {
+            type: 'fileChunkNotification',
+            senderId: sender.id,
+            fileId: message.fileId,
+            chunk: message.chunk,
+            timestamp: Date.now()
+        };
+
+        this.broadcast(notification);
+    }
+
+    private handleFileComplete(webSocket: WebSocket, message: FileCompleteMessage): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        const fileTransfer = this.fileTransfers.get(message.fileId);
+        if (!fileTransfer) {
+            this.sendError(webSocket, 'File transfer not found');
+            return;
+        }
+
+        // 标记传输完成
+        fileTransfer.isComplete = true;
+
+        // 广播传输完成通知
+        const notification: FileCompleteNotification = {
+            type: 'fileCompleteNotification',
+            senderId: sender.id,
+            fileId: message.fileId,
+            timestamp: Date.now()
+        };
+
+        this.broadcast(notification);
+
+        // 清理传输状态 (可选择保留一段时间用于重传)
+        setTimeout(() => {
+            this.fileTransfers.delete(message.fileId);
+            this.fileChunks.delete(message.fileId);
+        }, 5 * 60 * 1000); // 5分钟后清理
+    }
+
+    private handleVoiceMessage(webSocket: WebSocket, message: VoiceMessage): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 验证语音数据
+        if (!message.metadata || !message.encryptedVoiceData) {
+            this.sendError(webSocket, 'Invalid voice message data');
+            return;
+        }
+
+        // 检查语音文件大小限制 (例如最大50MB)
+        const maxVoiceSize = 50 * 1024 * 1024; // 50MB
+        const estimatedSize = message.encryptedVoiceData.length * 0.75; // Base64大致大小估算
+        if (estimatedSize > maxVoiceSize) {
+            this.sendError(webSocket, 'Voice message too large');
+            return;
+        }
+
+        // 广播语音消息
+        const notification: VoiceNotification = {
+            type: 'voiceNotification',
+            senderId: sender.id,
+            voiceId: message.metadata.voiceId,
+            metadata: message.metadata,
+            encryptedVoiceData: message.encryptedVoiceData,
+            timestamp: Date.now()
+        };
+
+        this.broadcast(notification);
+    }
+
+    private handleFileStatusRequest(webSocket: WebSocket, message: FileStatusRequest): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        const fileTransfer = this.fileTransfers.get(message.fileId);
+        if (!fileTransfer) {
+            this.sendError(webSocket, 'File transfer not found');
+            return;
+        }
+
+        const response: FileStatusResponse = {
+            type: 'fileStatusResponse',
+            fileId: message.fileId,
+            receivedChunks: Array.from(fileTransfer.uploadedChunks),
+            isComplete: fileTransfer.isComplete
+        };
+
+        webSocket.send(JSON.stringify(response));
+    }
+
     private handleDisconnect(webSocket: WebSocket): void {
         this.sessions.delete(webSocket);
         this.users.delete(webSocket);
-        
-        // 向其他用户广播用户列表更新
         this.broadcastUserList();
     }
 
@@ -178,7 +367,6 @@ export class ChatRoom {
             try {
                 session.send(messageStr);
             } catch (error) {
-                // 连接已关闭，清理
                 this.sessions.delete(session);
                 this.users.delete(session);
             }
@@ -235,20 +423,15 @@ export class ChatRoom {
 
     private async extractUserProfile(publicKeyArmored: string): Promise<UserProfile> {
         try {
-            // 解析公钥
             const publicKey = await readKey({ armoredKey: publicKeyArmored });
-            
-            // 获取主用户ID（通常是第一个用户ID）
             const primaryUser = await publicKey.getPrimaryUser();
             const userID = primaryUser.user.userID;
             
-            // 从用户ID中提取信息
             let name = '';
             let email = '';
             let id = '';
             
             if (userID) {
-                // 解析用户ID字符串，格式通常是 "Name <email>"
                 const userIdString = userID.userID || '';
                 const match = userIdString.match(/^(.+?)\s*<([^>]+)>$/);
                 
@@ -256,23 +439,17 @@ export class ChatRoom {
                     name = match[1].trim();
                     email = match[2].trim();
                 } else {
-                    // 如果没有匹配到标准格式，尝试其他解析方式
                     if (userIdString.includes('@')) {
-                        // 如果包含@符号，可能只是一个邮箱
                         email = userIdString.trim();
                         name = email.split('@')[0];
                     } else {
-                        // 否则当作名字处理
                         name = userIdString.trim();
                     }
                 }
             }
             
-            // 生成唯一ID，使用公钥指纹或密钥ID
             id = publicKey.getFingerprint().toUpperCase();
-            // 或者使用密钥ID：id = publicKey.getKeyID().toHex().toUpperCase();
             
-            // 如果没有提取到有效信息，生成默认值
             if (!name) {
                 name = `User_${Math.random().toString(36).substr(2, 8)}`;
             }
@@ -284,20 +461,16 @@ export class ChatRoom {
             
         } catch (error) {
             console.error('解析公钥时出错:', error);
-            
-            // 如果解析失败，回退到原来的简单方法
             return this.fallbackExtractUserProfile(publicKeyArmored);
         }
     }
     
-    // 备用方法，当OpenPGP解析失败时使用
     private fallbackExtractUserProfile(publicKey: string): UserProfile {
         const lines = publicKey.split('\n');
         let name = `User_${Math.random().toString(36).substr(2, 8)}`;
         let email = `${name.toLowerCase()}@example.com`;
         let id = this.generateUserIdFromKey(publicKey);
-    
-        // 尝试从公钥注释中提取用户信息
+
         for (const line of lines) {
             if (line.includes('Comment:') || line.includes('Name:')) {
                 const match = line.match(/([\w\s]+)\s*<([^>]+)>/);
@@ -307,18 +480,16 @@ export class ChatRoom {
                 }
             }
         }
-    
+
         return { id, name, email };
     }
 
-    
     private generateUserIdFromKey(publicKey: string): string {
-        // 简化的ID生成，基于公钥内容的哈希
         let hash = 0;
         for (let i = 0; i < publicKey.length; i++) {
             const char = publicKey.charCodeAt(i);
             hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // 转换为32位整数
+            hash = hash & hash;
         }
         return Math.abs(hash).toString(16).padStart(8, '0');
     }
