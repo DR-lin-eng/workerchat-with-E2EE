@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "workerchat-with-e2ee",
+	"name": "mess",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-07-26",
 	  
