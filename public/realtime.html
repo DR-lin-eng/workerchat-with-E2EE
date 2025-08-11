@@ -669,6 +669,8 @@
         let playbackAudioContext = null;
         let audioQueue = [];
         let isPlayingAudio = false;
+        let audioChunkBuffer = [];
+        let audioBufferTimeout = null;
         
         // DOM元素
         const userListEl = document.getElementById('userList');
@@ -2251,42 +2253,83 @@
                 const decryptedData = await decryptMessage(message.encryptedAudioData);
                 const audioData = new Uint8Array(decryptedData);
                 
-                // 尝试使用Web Audio API播放
-                await playAudioWithWebAudioAPI(audioData);
+                console.log(`接收到音频数据: ${audioData.length} 字节`);
+                
+                // 显示音频接收指示器
+                showAudioReceiveIndicator();
+                
+                // 注意：MediaRecorder 的实时音频块无法直接播放
+                // 这需要更复杂的音频流处理或使用 WebRTC
+                console.log('实时音频功能需要 WebRTC 或专门的音频流协议支持');
                 
             } catch (error) {
                 console.error('处理实时音频失败:', error);
-                // 降级到传统音频播放
-                fallbackAudioPlayback(audioData);
             }
         }
         
-        // 使用Web Audio API播放音频
-        async function playAudioWithWebAudioAPI(audioData) {
+
+        
+        // 使用音频流播放
+        async function playAudioStream(audioData) {
             try {
-                const audioContext = await initPlaybackAudioContext();
-                
-                // 创建音频blob
+                // 创建一个临时的audio元素用于播放
                 const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
-                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioUrl = URL.createObjectURL(audioBlob);
                 
-                // 解码音频数据
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                // 创建新的Audio对象
+                const audio = new Audio();
+                audio.src = audioUrl;
+                audio.volume = 0.8;
+                audio.preload = 'auto';
                 
-                // 创建音频源
-                const source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioContext.destination);
+                // 设置播放完成后的清理
+                const cleanup = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    audio.removeEventListener('ended', cleanup);
+                    audio.removeEventListener('error', cleanup);
+                };
                 
-                // 播放音频
-                source.start(0);
+                audio.addEventListener('ended', cleanup);
+                audio.addEventListener('error', cleanup);
                 
-                console.log('使用Web Audio API成功播放音频');
+                // 尝试播放
+                await audio.play();
+                console.log('音频流播放成功');
                 
             } catch (error) {
-                console.error('Web Audio API播放失败:', error);
+                console.error('音频流播放失败:', error);
+                // 显示音频接收指示器而不是播放
+                showAudioReceiveIndicator();
                 throw error;
             }
+        }
+        
+        // 显示音频接收指示器
+        function showAudioReceiveIndicator() {
+            // 在界面上显示正在接收音频的指示
+            const indicator = document.createElement('div');
+            indicator.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(255, 165, 0, 0.9);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 20px;
+                font-size: 14px;
+                z-index: 1000;
+                pointer-events: none;
+            `;
+            indicator.textContent = '🔊 接收到音频数据';
+            document.body.appendChild(indicator);
+            
+            // 2秒后移除指示器
+            setTimeout(() => {
+                if (indicator.parentNode) {
+                    indicator.parentNode.removeChild(indicator);
+                }
+            }, 2000);
         }
         
         // 降级音频播放方法
