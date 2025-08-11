@@ -79,6 +79,17 @@ export default {
             });
         }
 
+        // 根路径重定向到首页
+        if (url.pathname === '/') {
+            return new Response(null, {
+                status: 302,
+                headers: {
+                    'Location': '/index.html',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            });
+        }
+
         // 404 处理
         return new Response('Not Found', { status: 404 });
     }

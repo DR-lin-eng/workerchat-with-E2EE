@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>端到端加密聊天室 - 增强版</title>
-    <script src="https://unpkg.com/openpgp@6.2.0/dist/openpgp.min.js"></script>
+    <title>端到端加密聊天室</title>
     <style>
         :root {
             --primary: #4a6fa5;
@@ -14,7 +13,6 @@
             --success: #27ae60;
             --warning: #f39c12;
             --danger: #e74c3c;
-            --voice-recording: #ff6b6b;
         }
         
         * {
@@ -28,1857 +26,321 @@
             background: linear-gradient(135deg, #1a2a6c, #b21f1f, #1a2a6c);
             color: var(--light);
             min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             padding: 20px;
         }
         
         .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            display: grid;
-            grid-template-columns: 300px 1fr;
-            gap: 20px;
-            height: calc(100vh - 40px);
-        }
-        
-        .panel {
+            max-width: 800px;
+            width: 100%;
             background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 15px;
+            border-radius: 20px;
+            padding: 40px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
             border: 1px solid rgba(255, 255, 255, 0.18);
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .header {
-            padding-bottom: 15px;
-            margin-bottom: 15px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-        }
-        
-        h1, h2, h3 {
-            color: white;
-            margin-bottom: 15px;
-        }
-        
-        .connection-status {
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 0.85em;
-            margin-bottom: 15px;
             text-align: center;
         }
         
-        .status-connected { background: var(--success); }
-        .status-connecting { background: var(--warning); }
-        .status-disconnected { background: var(--danger); }
-        
-        .user-list {
-            flex: 1;
-            overflow-y: auto;
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            background: linear-gradient(45deg, #4a6fa5, #6b8cbc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
         
-        .user-item {
-            padding: 9px;
-            margin-bottom: 10px;
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 10px;
-            cursor: pointer;
+        .subtitle {
+            font-size: 1.2em;
+            margin-bottom: 40px;
+            opacity: 0.9;
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+        
+        .feature-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
             transition: all 0.3s ease;
         }
         
-        .user-item:hover {
-            background: rgba(255, 255, 255, 0.15);
-            transform: translateX(5px);
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
         }
         
-        .user-item.self {
-            background: rgba(74, 111, 165, 0.3);
-        }
-        
-        .user-name {
-            font-weight: bold;
-            margin-bottom: 2px;
-        }
-        
-        .user-id {
-            font-size: 0.75em;
-            color: #bbb;
-            word-break: break-all;
-            font-family: monospace;
-        }
-        
-        .user-email {
-            font-size: 0.8em;
-            color: #aaa;
-        }
-
-        .chat-area {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-        }
-
-        .messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 10px;
-            margin-bottom: 15px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-        }
-        
-        .message {
-            padding: 12px;
-            margin-bottom: 10px;
-            border-radius: 10px;
-            max-width: 80%;
-            word-wrap: break-word;
-        }
-        
-        .message.sent {
-            background: var(--primary);
-            align-self: flex-end;
-            margin-left: 20%;
-        }
-        
-        .message.received {
-            background: var(--dark);
-            align-self: flex-start;
-            margin-right: 20%;
-        }
-        
-        .message.file {
-            background: rgba(106, 90, 205, 0.3);
-            border: 1px solid #6a5acd;
-        }
-        
-        .message.voice {
-            background: rgba(255, 165, 0, 0.3);
-            border: 1px solid #ffa500;
-        }
-        
-        .message.encrypted {
-            background: rgba(231, 76, 60, 0.3);
-            border: 1px solid var(--danger);
-        }
-        
-        .sender-info {
-            font-weight: bold;
-            margin-bottom: 5px;
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85em;
-        }
-        
-        .sender-name {
-            color: #4ec9b0;
-            font-size: large;
-        }
-        
-        .sender-id {
-            font-weight: normal;
-            font-size: 0.65em;
-            color: #bbb;
-        }
-
-        .message-time {
-            font-size: 0.75em;
-            opacity: 0.7;
-        }
-        
-        .message-text {
-            line-height: 1.4;
-        }
-        
-        /* 文件消息样式 */
-        .file-message {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .file-icon {
-            font-size: 2em;
-        }
-        
-        .file-info {
-            flex: 1;
-        }
-        
-        .file-name {
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-        
-        .file-size {
-            font-size: 0.8em;
-            color: #ccc;
-        }
-        
-        .file-progress {
-            margin-top: 5px;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 2px;
-            overflow: hidden;
-        }
-        
-        .file-progress-bar {
-            height: 100%;
-            background: var(--success);
-            transition: width 0.3s ease;
-        }
-        
-        .download-btn {
-            padding: 5px 10px;
-            background: var(--success);
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 0.8em;
-        }
-        
-        /* 语音消息样式 */
-        .voice-message {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .voice-icon {
-            font-size: 1.5em;
-            color: #ffa500;
-        }
-        
-        .voice-duration {
-            font-size: 0.9em;
-            color: #ccc;
-        }
-        
-        .play-btn {
-            padding: 8px 12px;
-            background: #ffa500;
-            color: white;
-            border: none;
-            border-radius: 50%;
-            cursor: pointer;
-            font-size: 1em;
-            width: 40px;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .play-btn:hover {
-            background: #ff8c00;
-        }
-        
-        .voice-waveform {
-            flex: 1;
-            height: 30px;
-            background: rgba(255, 165, 0, 0.2);
-            border-radius: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.8em;
-        }
-        
-        /* 输入区域增强 */
-        .input-area {
-            display: flex;
-            gap: 10px;
-            align-items: flex-end;
-        }
-        
-        .input-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .input-tools {
-            display: flex;
-            gap: 5px;
-            align-items: center;
-        }
-        
-        .tool-btn {
-            padding: 8px 10px;
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9em;
-            transition: background 0.3s;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        
-        .tool-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-        
-        .tool-btn.recording {
-            background: var(--voice-recording);
-            animation: pulse 1s infinite;
-        }
-        
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.6; }
-            100% { opacity: 1; }
-        }
-        
-        textarea {
-            flex: 1;
-            padding: 12px;
-            border-radius: 8px;
-            border: none;
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-            resize: none;
-            min-height: 60px;
-        }
-        
-        .send-button {
-            padding: 12px 20px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background 0.3s;
-            height: fit-content;
-        }
-        
-        .send-button:hover {
-            background: var(--secondary);
-        }
-        
-        .send-button:disabled {
-            background: #666;
-            cursor: not-allowed;
-        }
-        
-        /* 文件拖拽区域 */
-        .drop-zone {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(74, 111, 165, 0.8);
-            backdrop-filter: blur(10px);
-            display: none;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            border: 3px dashed white;
-            border-radius: 15px;
-            font-size: 1.5em;
-            z-index: 1000;
-        }
-        
-        .drop-zone.active {
-            display: flex;
-        }
-        
-        .drop-zone-icon {
+        .feature-icon {
             font-size: 3em;
             margin-bottom: 20px;
         }
         
-        /* 隐藏的文件输入 */
-        #fileInput {
-            display: none;
-        }
-        
-        /* 键管理区域 */
-        .key-management {
-            margin-top: 20px;
-            padding-top: 15px;
-            border-top: 1px solid rgba(255, 255, 255, 0.2);
-        }
-        
-        .key-info {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 10px;
-            border-radius: 8px;
+        .feature-title {
+            font-size: 1.5em;
             margin-bottom: 15px;
-            font-size: 0.9em;
+            color: var(--primary);
         }
         
-        .key-id {
-            word-break: break-all;
-            font-family: monospace;
-            font-size: 9%;
-            color: #4ec9b0;
+        .feature-description {
+            margin-bottom: 20px;
+            opacity: 0.8;
+            line-height: 1.6;
         }
         
-        .key-buttons {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            margin-bottom: 10px;
-        }
-        
-        .key-buttons button {
-            padding: 8px 12px;
-            font-size: 0.85em;
+        .feature-btn {
+            display: inline-block;
+            padding: 12px 24px;
             background: var(--primary);
             color: white;
-            border: none;
+            text-decoration: none;
             border-radius: 8px;
-            cursor: pointer;
-            transition: background 0.3s;
+            transition: all 0.3s ease;
+            font-weight: 500;
         }
         
-        .key-buttons button:hover {
+        .feature-btn:hover {
             background: var(--secondary);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(74, 111, 165, 0.4);
         }
         
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 15px 25px;
-            border-radius: 8px;
+        .feature-btn.recommended {
             background: var(--success);
-            color: white;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            transform: translateX(120%);
-            transition: transform 0.3s ease;
-            max-width: 300px;
         }
         
-        .notification.show {
-            transform: translateX(0);
+        .feature-btn.recommended:hover {
+            background: #219a52;
         }
         
-        .notification.error {
-            background: var(--danger);
-        }
-        
-        .notification.warning {
+        .feature-btn.optional {
             background: var(--warning);
         }
         
-        .debug-info {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 10px;
-            border-radius: 8px;
-            font-family: monospace;
-            font-size: 0.8em;
-            max-height: 200px;
-            overflow-y: auto;
-            margin-top: 10px;
+        .feature-btn.optional:hover {
+            background: #e67e22;
+        }
+        
+        .info-section {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 15px;
+            padding: 30px;
+            margin-top: 30px;
+            text-align: left;
+        }
+        
+        .info-title {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            color: var(--primary);
+        }
+        
+        .info-list {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .info-list li {
+            padding: 8px 0;
+            padding-left: 25px;
+            position: relative;
+        }
+        
+        .info-list li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: var(--success);
+            font-weight: bold;
+        }
+        
+        .room-input {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
         
-        .room-url {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 8px;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 0.8em;
-            margin-bottom: 10px;
-            word-break: break-all;
+        .room-input h3 {
+            margin-bottom: 15px;
+            color: var(--primary);
+        }
+        
+        .room-input input {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+        
+        .room-input input::placeholder {
+            color: rgba(255, 255, 255, 0.6);
+        }
+        
+        .room-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .room-btn {
+            flex: 1;
+            min-width: 120px;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        .room-btn.primary {
+            background: var(--success);
+            color: white;
+        }
+        
+        .room-btn.primary:hover {
+            background: #219a52;
+        }
+        
+        .room-btn.secondary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .room-btn.secondary:hover {
+            background: var(--secondary);
+        }
+        
+        .room-btn.tertiary {
+            background: var(--warning);
+            color: white;
+        }
+        
+        .room-btn.tertiary:hover {
+            background: #e67e22;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+            
+            .features {
+                grid-template-columns: 1fr;
+            }
+            
+            .room-buttons {
+                flex-direction: column;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="panel manage-area">
-            <div class="header">
-                <h2>在线用户</h2>
-                <div id="connectionStatus" class="connection-status status-disconnected">
-                    未连接
-                </div>
+        <h1>🔒 端到端加密聊天室</h1>
+        <p class="subtitle">安全、私密、实时的加密通信平台</p>
+        
+        <div class="features">
+            <div class="feature-card">
+                <div class="feature-icon">⚡</div>
+                <h3 class="feature-title">WebSocket 实时传输</h3>
+                <p class="feature-description">
+                    基于 WebSocket 的实时文件传输，支持大文件分片传输和 MD5 完整性验证。
+                    兼容性好，适合所有网络环境。
+                </p>
+                <a href="/realtime.html" class="feature-btn recommended">立即使用（推荐）</a>
             </div>
-            <div class="user-list" id="userList">
-                <div style="text-align: center; color: #999; padding: 20px;">
-                    等待连接...
-                </div>
-            </div>
-            <div class="key-management">
-                <h3>密钥管理</h3>
-                <div class="key-info">
-                    <div>你的密钥ID:</div>
-                    <div id="keyId" class="key-id">未注册</div>
-                </div>
-                <div class="key-buttons">
-                    <button id="importPublicKey">导入公钥</button>
-                    <button id="importPrivateKey">导入私钥</button>
-                    <button id="copyPublicKey">复制公钥</button>
-                    <button id="generateKeys">生成密钥</button>
-                </div>
-                <div class="debug-info" id="debugInfo"></div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">🌐</div>
+                <h3 class="feature-title">WebRTC P2P 传输</h3>
+                <p class="feature-description">
+                    点对点直接传输，文件不经过服务器。传输速度更快，但需要网络环境支持 WebRTC。
+                </p>
+                <a href="/webrtc.html" class="feature-btn optional">P2P 传输（可选）</a>
             </div>
         </div>
-
-        <div class="panel chat-area">
-            <div class="header">
-                <h2 id="roomName">E2EE Chat Room</h2>
-                <div class="room-url" id="roomUrl"></div>
+        
+        <div class="info-section">
+            <h3 class="info-title">🔐 安全特性</h3>
+            <ul class="info-list">
+                <li>端到端 PGP 加密，服务器无法读取消息内容</li>
+                <li>私钥仅存储在本地浏览器，确保密钥安全</li>
+                <li>文件传输支持 MD5 完整性验证</li>
+                <li>WebSocket 连接使用 WSS 加密传输</li>
+                <li>支持密钥导入导出和生成</li>
+            </ul>
+        </div>
+        
+        <div class="info-section">
+            <h3 class="info-title">✨ 功能特点</h3>
+            <ul class="info-list">
+                <li>实时消息传输和在线用户列表</li>
+                <li>支持任意格式文件传输</li>
+                <li>实时传输进度显示</li>
+                <li>移动端优化界面</li>
+                <li>房间系统，支持多人聊天</li>
+            </ul>
+        </div>
+        
+        <div class="room-input">
+            <h3>🏠 房间设置</h3>
+            <input type="text" id="roomIdInput" placeholder="输入房间ID（可选，留空自动生成）">
+            <div class="room-buttons">
+                <button class="room-btn primary" onclick="joinRoom('realtime')">
+                    加入实时传输房间
+                </button>
+                <button class="room-btn secondary" onclick="joinRoom('webrtc')">
+                    加入 P2P 房间
+                </button>
+                <button class="room-btn tertiary" onclick="generateRoom()">
+                    生成新房间ID
+                </button>
             </div>
-            
-            <!-- 拖拽文件区域 -->
-            <div class="drop-zone" id="dropZone">
-                <div class="drop-zone-icon">📁</div>
-                <div>拖拽文件到这里发送</div>
-                <div style="font-size: 0.8em; margin-top: 10px; opacity: 0.8;">
-                    支持任意文件类型，自动分片加密传输
-                </div>
-            </div>
-            
-            <div class="messages" id="messages"></div>
-            
-            <div class="input-area">
-                <div class="input-container">
-                    <div class="input-tools">
-                        <button class="tool-btn" id="fileBtn" title="发送文件">
-                            📎 文件
-                        </button>
-                        <button class="tool-btn" id="voiceBtn" title="语音消息">
-                            🎤 语音
-                        </button>
-                        <span id="voiceStatus" style="font-size: 0.8em; color: #ccc;"></span>
-                    </div>
-                    <textarea id="messageInput" placeholder="输入消息..." disabled></textarea>
-                </div>
-                <button class="send-button" id="sendButton" disabled>发送</button>
-            </div>
-            
-            <input type="file" id="fileInput" multiple>
         </div>
     </div>
-    
-    <div class="notification" id="notification"></div>
 
     <script>
-        // ========================
-        // 全局变量
-        // ========================
-        let privateKey = '';
-        let publicKey = '';
-        let userId = '';
-        let userName = '';
-        let userEmail = '';
-        let websocket = null;
-        let roomId = '';
-        let users = new Map();
-        let reconnectAttempts = 0;
-        let maxReconnectAttempts = 5;
-        
-        // 文件传输相关
-        let fileTransfers = new Map(); // fileId -> FileTransferState
-        const CHUNK_SIZE = 95 * 1024 * 1024; // 95MB per chunk (under 100MB limit)
-        
-        // 语音录制相关
-        let mediaRecorder = null;
-        let audioChunks = [];
-        let isRecording = false;
-        let recordingStartTime = 0;
-        
-        // DOM元素
-        const userListEl = document.getElementById('userList');
-        const messagesEl = document.getElementById('messages');
-        const messageInputEl = document.getElementById('messageInput');
-        const sendButtonEl = document.getElementById('sendButton');
-        const generateKeysBtn = document.getElementById('generateKeys');
-        const importPublicKeyBtn = document.getElementById('importPublicKey');
-        const importPrivateKeyBtn = document.getElementById('importPrivateKey');
-        const copyPublicKeyBtn = document.getElementById('copyPublicKey');
-        const keyIdEl = document.getElementById('keyId');
-        const notificationEl = document.getElementById('notification');
-        const debugInfoEl = document.getElementById('debugInfo');
-        const connectionStatusEl = document.getElementById('connectionStatus');
-        const roomUrlEl = document.getElementById('roomUrl');
-        const dropZoneEl = document.getElementById('dropZone');
-        const fileInputEl = document.getElementById('fileInput');
-        const fileBtnEl = document.getElementById('fileBtn');
-        const voiceBtnEl = document.getElementById('voiceBtn');
-        const voiceStatusEl = document.getElementById('voiceStatus');
-        
-        // ========================
-        // 文件传输功能
-        // ========================
-        
-        // 文件传输状态跟踪
-        class FileTransferState {
-            constructor(metadata) {
-                this.metadata = metadata;
-                this.chunks = new Map(); // chunkIndex -> data
-                this.receivedChunks = new Set();
-                this.isComplete = false;
-                this.messageElement = null;
-                this.progressElement = null;
-            }
-            
-            getProgress() {
-                return (this.receivedChunks.size / this.metadata.totalChunks) * 100;
-            }
-            
-            updateProgress() {
-                if (this.progressElement) {
-                    const progress = this.getProgress();
-                    this.progressElement.style.width = `${progress}%`;
-                }
-            }
-            
-            addChunk(chunkIndex, data) {
-                this.chunks.set(chunkIndex, data);
-                this.receivedChunks.add(chunkIndex);
-                this.updateProgress();
-                
-                if (this.receivedChunks.size === this.metadata.totalChunks) {
-                    this.isComplete = true;
-                    this.assembleFile();
-                }
-            }
-            
-            async assembleFile() {
-                try {
-                    // 按顺序组装文件块
-                    const chunks = [];
-                    for (let i = 0; i < this.metadata.totalChunks; i++) {
-                        const chunkData = this.chunks.get(i);
-                        if (!chunkData) {
-                            throw new Error(`Missing chunk ${i}`);
-                        }
-                        chunks.push(chunkData);
-                    }
-                    
-                    // 解密并合并数据
-                    const decryptedChunks = await Promise.all(
-                        chunks.map(chunk => this.decryptChunk(chunk))
-                    );
-                    
-                    // 合并所有块
-                    const totalSize = decryptedChunks.reduce((size, chunk) => size + chunk.length, 0);
-                    const fileData = new Uint8Array(totalSize);
-                    let offset = 0;
-                    
-                    for (const chunk of decryptedChunks) {
-                        fileData.set(chunk, offset);
-                        offset += chunk.length;
-                    }
-                    
-                    // 创建下载链接
-                    const blob = new Blob([fileData], { type: this.metadata.fileType || 'application/octet-stream' });
-                    this.createDownloadLink(blob);
-                    
-                } catch (error) {
-                    debugLog('文件组装失败: ' + error.message);
-                    showNotification('文件组装失败', 'error');
-                }
-            }
-            
-            async decryptChunk(encryptedChunk) {
-                if (!privateKey) {
-                    throw new Error('需要私钥解密文件');
-                }
-                
-                const encryptedMessage = await openpgp.readMessage({
-                    armoredMessage: encryptedChunk
-                });
-                
-                const privKey = await openpgp.readPrivateKey({
-                    armoredKey: privateKey
-                });
-                
-                const { data: decrypted } = await openpgp.decrypt({
-                    message: encryptedMessage,
-                    decryptionKeys: privKey,
-                    format: 'binary'
-                });
-                
-                return new Uint8Array(decrypted);
-            }
-            
-            createDownloadLink(blob) {
-                if (this.messageElement) {
-                    const downloadBtn = this.messageElement.querySelector('.download-btn');
-                    if (downloadBtn) {
-                        const url = URL.createObjectURL(blob);
-                        downloadBtn.onclick = () => {
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = this.metadata.fileName;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-                        };
-                        downloadBtn.textContent = '下载';
-                        downloadBtn.disabled = false;
-                        downloadBtn.style.background = 'var(--success)';
-                    }
-                }
-            }
+        function joinRoom(type) {
+            const roomId = document.getElementById('roomIdInput').value.trim();
+            const url = roomId ? `/${type}.html?room=${roomId}` : `/${type}.html`;
+            window.location.href = url;
         }
         
-        // 初始化文件拖拽功能
-        function initFileDropSupport() {
-            const chatArea = document.querySelector('.chat-area');
-            
-            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                chatArea.addEventListener(eventName, preventDefaults, false);
-                document.body.addEventListener(eventName, preventDefaults, false);
-            });
-            
-            ['dragenter', 'dragover'].forEach(eventName => {
-                chatArea.addEventListener(eventName, highlight, false);
-            });
-            
-            ['dragleave', 'drop'].forEach(eventName => {
-                chatArea.addEventListener(eventName, unhighlight, false);
-            });
-            
-            chatArea.addEventListener('drop', handleDrop, false);
-            
-            function preventDefaults(e) {
-                e.preventDefault();
-                e.stopPropagation();
+        function generateRoom() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let roomId = '';
+            for (let i = 0; i < 16; i++) {
+                roomId += chars.charAt(Math.floor(Math.random() * chars.length));
             }
-            
-            function highlight(e) {
-                dropZoneEl.classList.add('active');
-            }
-            
-            function unhighlight(e) {
-                dropZoneEl.classList.remove('active');
-            }
-            
-            function handleDrop(e) {
-                const dt = e.dataTransfer;
-                const files = dt.files;
-                handleFiles(files);
-            }
+            document.getElementById('roomIdInput').value = roomId;
         }
         
-        // 处理文件选择
-        async function handleFiles(files) {
-            if (!publicKey) {
-                showNotification('请先导入或生成密钥', 'warning');
-                return;
-            }
-            
-            for (let file of files) {
-                await sendFile(file);
-            }
+        // 检查URL参数，如果有room参数则自动填入
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomParam = urlParams.get('room');
+        if (roomParam) {
+            document.getElementById('roomIdInput').value = roomParam;
         }
-        
-        // 发送文件
-        async function sendFile(file) {
-            try {
-                debugLog(`开始发送文件: ${file.name}, 大小: ${file.size} bytes`);
-                
-                const fileId = generateId();
-                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-                
-                const metadata = {
-                    fileId: fileId,
-                    fileName: file.name,
-                    fileSize: file.size,
-                    fileType: file.type,
-                    totalChunks: totalChunks,
-                    chunkSize: CHUNK_SIZE
-                };
-                
-                // 发送文件开始消息
-                const fileStartMessage = {
-                    type: 'fileStart',
-                    metadata: metadata,
-                    encryptedMetadata: await encryptForAllUsers(JSON.stringify(metadata))
-                };
-                
-                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                    websocket.send(JSON.stringify(fileStartMessage));
-                }
-                
-                // 显示发送进度
-                displayFileSending(metadata);
-                
-                // 分片发送文件
-                for (let i = 0; i < totalChunks; i++) {
-                    const start = i * CHUNK_SIZE;
-                    const end = Math.min(start + CHUNK_SIZE, file.size);
-                    const chunk = file.slice(start, end);
-                    
-                    const chunkData = await chunk.arrayBuffer();
-                    const chunkArray = new Uint8Array(chunkData);
-                    
-                    const chunkInfo = {
-                        chunkId: generateId(),
-                        chunkIndex: i,
-                        totalChunks: totalChunks,
-                        data: Array.from(chunkArray)
-                    };
-                    
-                    // 加密分片
-                    const encryptedChunk = await encryptForAllUsers(chunkArray);
-                    
-                    const fileChunkMessage = {
-                        type: 'fileChunk',
-                        fileId: fileId,
-                        chunk: chunkInfo,
-                        encryptedChunk: encryptedChunk
-                    };
-                    
-                    if (websocket && websocket.readyState === WebSocket.OPEN) {
-                        websocket.send(JSON.stringify(fileChunkMessage));
-                    }
-                    
-                    // 更新进度
-                    updateFileSendingProgress(fileId, (i + 1) / totalChunks * 100);
-                    
-                    // 适当延迟避免过载
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
-                
-                // 发送文件完成消息
-                const fileCompleteMessage = {
-                    type: 'fileComplete',
-                    fileId: fileId
-                };
-                
-                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                    websocket.send(JSON.stringify(fileCompleteMessage));
-                }
-                
-                debugLog(`文件 ${file.name} 发送完成`);
-                showNotification(`文件 "${file.name}" 发送完成`);
-                
-            } catch (error) {
-                debugLog(`文件发送失败: ${error.message}`);
-                showNotification(`文件发送失败: ${error.message}`, 'error');
-            }
-        }
-        
-        // ========================
-        // 语音录制功能
-        // ========================
-        
-        // 初始化语音功能
-        async function initVoiceSupport() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    }
-                });
-                
-                mediaRecorder = new MediaRecorder(stream, {
-                    mimeType: 'audio/webm;codecs=opus'
-                });
-                
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        audioChunks.push(event.data);
-                    }
-                };
-                
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                    await sendVoiceMessage(audioBlob);
-                    audioChunks = [];
-                };
-                
-                voiceBtnEl.disabled = false;
-                debugLog('语音功能初始化完成');
-                
-            } catch (error) {
-                debugLog(`语音功能初始化失败: ${error.message}`);
-                voiceBtnEl.disabled = true;
-                voiceStatusEl.textContent = '麦克风权限被拒绝';
-            }
-        }
-        
-        // 开始/停止录音
-        function toggleVoiceRecording() {
-            if (!mediaRecorder) {
-                showNotification('语音功能未初始化', 'error');
-                return;
-            }
-            
-            if (!publicKey) {
-                showNotification('请先导入或生成密钥', 'warning');
-                return;
-            }
-            
-            if (isRecording) {
-                stopRecording();
-            } else {
-                startRecording();
-            }
-        }
-        
-        function startRecording() {
-            if (mediaRecorder && mediaRecorder.state === 'inactive') {
-                audioChunks = [];
-                mediaRecorder.start();
-                isRecording = true;
-                recordingStartTime = Date.now();
-                
-                voiceBtnEl.classList.add('recording');
-                voiceBtnEl.innerHTML = '🛑 停止';
-                voiceStatusEl.textContent = '录音中...';
-                
-                // 显示录音时长
-                const updateTimer = setInterval(() => {
-                    if (!isRecording) {
-                        clearInterval(updateTimer);
-                        return;
-                    }
-                    const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
-                    voiceStatusEl.textContent = `录音中... ${duration}s`;
-                }, 1000);
-                
-                debugLog('开始录音');
-            }
-        }
-        
-        function stopRecording() {
-            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-                isRecording = false;
-                
-                voiceBtnEl.classList.remove('recording');
-                voiceBtnEl.innerHTML = '🎤 语音';
-                voiceStatusEl.textContent = '处理中...';
-                
-                debugLog('停止录音');
-            }
-        }
-        
-        // 发送语音消息
-        async function sendVoiceMessage(audioBlob) {
-            try {
-                const duration = (Date.now() - recordingStartTime) / 1000;
-                
-                // 检查录音时长
-                if (duration < 1) {
-                    showNotification('录音时间太短', 'warning');
-                    voiceStatusEl.textContent = '';
-                    return;
-                }
-                
-                const voiceId = generateId();
-                const audioArrayBuffer = await audioBlob.arrayBuffer();
-                const audioArray = new Uint8Array(audioArrayBuffer);
-                
-                const metadata = {
-                    voiceId: voiceId,
-                    duration: Math.round(duration),
-                    sampleRate: 48000, // WebM Opus default
-                    format: 'webm'
-                };
-                
-                // 加密语音数据
-                const encryptedVoiceData = await encryptForAllUsers(audioArray);
-                
-                const voiceMessage = {
-                    type: 'voice',
-                    metadata: metadata,
-                    encryptedVoiceData: encryptedVoiceData
-                };
-                
-                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                    websocket.send(JSON.stringify(voiceMessage));
-                }
-                
-                voiceStatusEl.textContent = '';
-                debugLog(`语音消息发送完成，时长: ${duration}s`);
-                showNotification(`语音消息发送完成 (${Math.round(duration)}秒)`);
-                
-            } catch (error) {
-                debugLog(`语音消息发送失败: ${error.message}`);
-                showNotification(`语音消息发送失败: ${error.message}`, 'error');
-                voiceStatusEl.textContent = '';
-            }
-        }
-        
-        // ========================
-        // 消息显示功能
-        // ========================
-        
-        function displayFileSending(metadata) {
-            const messageEl = document.createElement('div');
-            messageEl.className = 'message sent file';
-            messageEl.innerHTML = `
-                <div class="sender-info">
-                    <span class="sender-name">你</span>
-                    <span class="message-time">${new Date().toLocaleTimeString()}</span>
-                </div>
-                <div class="file-message">
-                    <div class="file-icon">📄</div>
-                    <div class="file-info">
-                        <div class="file-name">${metadata.fileName}</div>
-                        <div class="file-size">发送中... ${formatFileSize(metadata.fileSize)}</div>
-                        <div class="file-progress">
-                            <div class="file-progress-bar" id="progress-${metadata.fileId}" style="width: 0%"></div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-        
-        function updateFileSendingProgress(fileId, progress) {
-            const progressEl = document.getElementById(`progress-${fileId}`);
-            if (progressEl) {
-                progressEl.style.width = `${progress}%`;
-            }
-        }
-        
-        function displayFileMessage(senderId, metadata, timestamp, isSelf) {
-            const senderInfo = users.get(senderId) || {
-                name: senderId.slice(24, 40),
-                email: ''
-            };
-            
-            const messageEl = document.createElement('div');
-            messageEl.className = `message ${isSelf ? 'sent' : 'received'} file`;
-            
-            const fileTransfer = new FileTransferState(metadata);
-            fileTransfers.set(metadata.fileId, fileTransfer);
-            fileTransfer.messageElement = messageEl;
-            
-            messageEl.innerHTML = `
-                <div class="sender-info">
-                    <span class="sender-name">${senderInfo.name}${isSelf ? ' (你)' : ''}</span>
-                    <span class="sender-id">[${senderId.slice(24, 40)}]</span>
-                    <span class="message-time">${new Date(timestamp).toLocaleTimeString()}</span>
-                </div>
-                <div class="file-message">
-                    <div class="file-icon">📄</div>
-                    <div class="file-info">
-                        <div class="file-name">${metadata.fileName}</div>
-                        <div class="file-size">${formatFileSize(metadata.fileSize)}</div>
-                        <div class="file-progress">
-                            <div class="file-progress-bar" style="width: 0%"></div>
-                        </div>
-                    </div>
-                    <button class="download-btn" disabled>接收中...</button>
-                </div>
-            `;
-            
-            fileTransfer.progressElement = messageEl.querySelector('.file-progress-bar');
-            
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-        
-        function displayVoiceMessage(senderId, metadata, encryptedVoiceData, timestamp, isSelf) {
-            const senderInfo = users.get(senderId) || {
-                name: senderId.slice(24, 40),
-                email: ''
-            };
-            
-            const messageEl = document.createElement('div');
-            messageEl.className = `message ${isSelf ? 'sent' : 'received'} voice`;
-            messageEl.innerHTML = `
-                <div class="sender-info">
-                    <span class="sender-name">${senderInfo.name}${isSelf ? ' (你)' : ''}</span>
-                    <span class="sender-id">[${senderId.slice(24, 40)}]</span>
-                    <span class="message-time">${new Date(timestamp).toLocaleTimeString()}</span>
-                </div>
-                <div class="voice-message">
-                    <button class="play-btn" onclick="playVoiceMessage('${metadata.voiceId}')">▶</button>
-                    <div class="voice-waveform">
-                        <div class="voice-duration">${metadata.duration}秒语音</div>
-                    </div>
-                </div>
-            `;
-            
-            // 存储加密的语音数据用于播放
-            messageEl.dataset.encryptedVoiceData = encryptedVoiceData;
-            messageEl.dataset.voiceId = metadata.voiceId;
-            
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-        
-        // 播放语音消息
-        async function playVoiceMessage(voiceId) {
-            try {
-                const messageEl = document.querySelector(`[data-voice-id="${voiceId}"]`);
-                if (!messageEl) return;
-                
-                const encryptedVoiceData = messageEl.dataset.encryptedVoiceData;
-                if (!encryptedVoiceData || !privateKey) {
-                    showNotification('无法播放语音消息', 'error');
-                    return;
-                }
-                
-                // 解密语音数据
-                const encryptedMessage = await openpgp.readMessage({
-                    armoredMessage: encryptedVoiceData
-                });
-                
-                const privKey = await openpgp.readPrivateKey({
-                    armoredKey: privateKey
-                });
-                
-                const { data: decrypted } = await openpgp.decrypt({
-                    message: encryptedMessage,
-                    decryptionKeys: privKey,
-                    format: 'binary'
-                });
-                
-                // 创建音频对象并播放
-                const audioBlob = new Blob([decrypted], { type: 'audio/webm' });
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = new Audio(audioUrl);
-                
-                const playBtn = messageEl.querySelector('.play-btn');
-                playBtn.textContent = '⏸';
-                playBtn.disabled = true;
-                
-                audio.onended = () => {
-                    playBtn.textContent = '▶';
-                    playBtn.disabled = false;
-                    URL.revokeObjectURL(audioUrl);
-                };
-                
-                audio.onerror = () => {
-                    playBtn.textContent = '▶';
-                    playBtn.disabled = false;
-                    URL.revokeObjectURL(audioUrl);
-                    showNotification('语音播放失败', 'error');
-                };
-                
-                await audio.play();
-                
-            } catch (error) {
-                debugLog(`语音播放失败: ${error.message}`);
-                showNotification('语音播放失败', 'error');
-            }
-        }
-        
-        // ========================
-        // 工具函数
-        // ========================
-        
-        function generateId() {
-            return Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-        }
-        
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-        
-        // 为所有用户加密数据
-        async function encryptForAllUsers(data) {
-            const allUsers = Array.from(users.values());
-            const publicKeys = [];
-            
-            for (const user of allUsers) {
-                try {
-                    const pubKey = await openpgp.readKey({ armoredKey: user.publicKey });
-                    publicKeys.push(pubKey);
-                } catch (error) {
-                    debugLog(`无法读取用户 ${user.name} 的公钥: ${error.message}`);
-                }
-            }
-            
-            if (publicKeys.length === 0) {
-                throw new Error('没有找到有效的公钥');
-            }
-            
-            let message;
-            if (typeof data === 'string') {
-                message = await openpgp.createMessage({ text: data });
-            } else {
-                message = await openpgp.createMessage({ binary: data });
-            }
-            
-            return await openpgp.encrypt({
-                message: message,
-                encryptionKeys: publicKeys,
-                format: 'armored'
-            });
-        }
-        
-        // ========================
-        // 现有功能保持不变
-        // ========================
-        
-        // 获取房间ID
-        async function fetchRoomId() {
-            const response = await fetch("/api/room", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                }
-            });
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.text();
-        }
-
-        // 调试日志函数
-        function debugLog(message) {
-            console.log(message);
-            const timestamp = new Date().toLocaleTimeString();
-            debugInfoEl.textContent += `${timestamp}: ${message}\n`;
-            debugInfoEl.scrollTop = debugInfoEl.scrollHeight;
-        }
-        
-        // 显示通知
-        function showNotification(message, type = 'success') {
-            notificationEl.textContent = message;
-            notificationEl.className = 'notification';
-            
-            if (type === 'error') {
-                notificationEl.classList.add('error');
-            } else if (type === 'warning') {
-                notificationEl.classList.add('warning');
-            }
-            
-            notificationEl.classList.add('show');
-            
-            setTimeout(() => {
-                notificationEl.classList.remove('show');
-            }, 3000);
-        }
-        
-        // WebSocket相关函数
-        function getWebSocketUrl() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.host;
-            return `${protocol}//${host}/api/room/${roomId}/websocket`;
-        }
-
-        async function connectWebSocket() {
-            try {
-                const wsUrl = getWebSocketUrl();
-                debugLog(`尝试连接WebSocket: ${wsUrl}`);
-                updateConnectionStatus("connecting");
-            
-                websocket = new WebSocket(wsUrl);
-                setupWebSocketHandlers();
-            
-            } catch (error) {
-                debugLog("WebSocket连接失败: " + error.message);
-                updateConnectionStatus("disconnected");
-                showNotification("连接失败: " + error.message, "error");
-            
-                try {
-                    roomId = await fetchRoomId();
-                    debugLog(`重新获取房间ID: ${roomId}`);
-                    setTimeout(() => connectWebSocket(), 2000);
-                } catch (retryError) {
-                    debugLog("重新获取房间ID失败: " + retryError.message);
-                }
-            }
-        }
-        
-        function setupWebSocketHandlers() {
-            if (!websocket) return;
-            
-            websocket.onopen = () => {
-                debugLog('WebSocket连接已建立');
-                updateConnectionStatus('connected');
-                reconnectAttempts = 0;
-                
-                if (publicKey) {
-                    registerUser();
-                }
-                
-                enableUI();
-            };
-            
-            websocket.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    handleWebSocketMessage(data);
-                } catch (error) {
-                    debugLog('解析消息失败: ' + error.message);
-                }
-            };
-            
-            websocket.onclose = () => {
-                debugLog('WebSocket连接已关闭');
-                updateConnectionStatus('disconnected');
-                disableUI();
-                
-                if (reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++;
-                    setTimeout(() => {
-                        debugLog(`尝试重连 (${reconnectAttempts}/${maxReconnectAttempts})`);
-                        connectWebSocket();
-                    }, 2000 * reconnectAttempts);
-                }
-            };
-            
-            websocket.onerror = (error) => {
-                debugLog("WebSocket错误: " + error);
-                showNotification('连接错误', 'error');
-            };
-        }
-        
-        function updateConnectionStatus(status) {
-            connectionStatusEl.className = `connection-status status-${status}`;
-            switch (status) {
-                case 'connected':
-                    connectionStatusEl.textContent = '已连接';
-                    break;
-                case 'connecting':
-                    connectionStatusEl.textContent = '连接中...';
-                    break;
-                case 'disconnected':
-                    connectionStatusEl.textContent = '未连接';
-                    break;
-            }
-        }
-        
-        function enableUI() {
-            if (publicKey) {
-                messageInputEl.disabled = false;
-                sendButtonEl.disabled = false;
-            }
-        }
-        
-        function disableUI() {
-            messageInputEl.disabled = true;
-            sendButtonEl.disabled = true;
-        }
-        
-        function registerUser() {
-            if (websocket && websocket.readyState === WebSocket.OPEN && publicKey) {
-                debugLog('发送用户注册请求');
-                websocket.send(JSON.stringify({
-                    type: 'register',
-                    publicKey: publicKey
-                }));
-            }
-        }
-        
-        function handleWebSocketMessage(data) {
-            debugLog('收到消息: ' + data.type);
-            
-            switch (data.type) {
-                case 'registered':
-                case 'authenticated':
-                    userId = data.profile.id;
-                    userName = data.profile.name;
-                    userEmail = data.profile.email;
-                    keyIdEl.textContent = userId;
-                    showNotification('身份验证成功');
-                    enableUI();
-                    
-                    websocket.send(JSON.stringify({ type: 'getUsers' }));
-                    break;
-                    
-                case 'encryptedMessage':
-                    handleEncryptedMessage(data);
-                    break;
-                    
-                case 'fileStartNotification':
-                    handleFileStartNotification(data);
-                    break;
-                    
-                case 'fileChunkNotification':
-                    handleFileChunkNotification(data);
-                    break;
-                    
-                case 'fileCompleteNotification':
-                    handleFileCompleteNotification(data);
-                    break;
-                    
-                case 'voiceNotification':
-                    handleVoiceNotification(data);
-                    break;
-                    
-                case 'userList':
-                    updateUserList(data.users);
-                    break;
-                    
-                case 'error':
-                    showNotification(data.message, 'error');
-                    debugLog('服务器错误: ' + data.message);
-                    break;
-                    
-                default:
-                    debugLog('未知消息类型: ' + data.type);
-            }
-        }
-        
-        // 处理各种通知消息
-        function handleFileStartNotification(data) {
-            displayFileMessage(data.senderId, data.metadata, data.timestamp, data.senderId === userId);
-        }
-        
-        function handleFileChunkNotification(data) {
-            const fileTransfer = fileTransfers.get(data.fileId);
-            if (fileTransfer && data.senderId !== userId) {
-                // 这里应该从服务器获取加密的分片数据
-                // 为了简化，我们假设分片数据在chunk中
-                if (data.chunk && data.chunk.data) {
-                    fileTransfer.addChunk(data.chunk.chunkIndex, data.chunk.data);
-                }
-            }
-        }
-        
-        function handleFileCompleteNotification(data) {
-            const fileTransfer = fileTransfers.get(data.fileId);
-            if (fileTransfer) {
-                fileTransfer.isComplete = true;
-                debugLog(`文件 ${data.fileId} 传输完成`);
-            }
-        }
-        
-        function handleVoiceNotification(data) {
-            displayVoiceMessage(data.senderId, data.metadata, data.encryptedVoiceData, data.timestamp, data.senderId === userId);
-        }
-        
-        // 处理加密文本消息
-        async function handleEncryptedMessage(data) {
-            debugLog(`收到来自 ${data.senderId} 的加密消息`);
-            
-            if (!privateKey) {
-                displayEncryptedMessage(data, '需要私钥才能解密此消息');
-                return;
-            }
-            
-            try {
-                const encryptedMessage = await openpgp.readMessage({
-                    armoredMessage: data.encryptedData
-                });
-                
-                const privKey = await openpgp.readPrivateKey({
-                    armoredKey: privateKey
-                });
-                
-                const { data: decrypted } = await openpgp.decrypt({
-                    message: encryptedMessage,
-                    decryptionKeys: privKey,
-                    format: 'text'
-                });
-                
-                displayMessage({
-                    senderId: data.senderId,
-                    text: decrypted,
-                    timestamp: data.timestamp,
-                    isSelf: data.senderId === userId
-                });
-                
-                debugLog('消息解密成功');
-                
-            } catch (error) {
-                debugLog('解密失败: ' + error.message);
-                displayEncryptedMessage(data, '解密失败: ' + error.message);
-            }
-        }
-        
-        // 从URL参数获取房间ID
-        function getRoomIdFromURL() {
-            const urlParams = new URLSearchParams(window.location.search);
-            return urlParams.get('room');
-        }
-        
-        // 更新URL以包含房间ID
-        function updateURLWithRoomId(roomId) {
-            const newUrl = new URL(window.location);
-            newUrl.searchParams.set('room', roomId);
-            window.history.replaceState(null, '', newUrl.toString());
-        }
-
-        // 显示加密消息（无法解密时）
-        function displayEncryptedMessage(message, reason) {
-            const messageEl = document.createElement('div');
-            messageEl.className = `message ${message.isSelf ? 'sent' : 'received'} encrypted`;
-            const timeString = new Date(message.timestamp).toLocaleTimeString();
-            const senderInfo = users.get(message.senderId) || {
-                name: message.senderId.slice(24, 40),
-                email: ''
-            }
-
-            messageEl.innerHTML = `
-                <div class="sender-info">
-                    <span class="sender-name">${senderInfo.name}
-                    <span class="sender-id">[${message.senderId.slice(24, 40)}]</span></span>
-                    <span class="message-time">${timeString}</span>
-                </div>
-                <div class="message-text">
-                    <div style="font-style: italic; color: #ff6b6b;">🔒 ${reason}</div>
-                    <details style="margin-top: 8px;">
-                        <summary style="cursor: pointer; font-size: 0.8em;">查看加密数据</summary>
-                        <pre style="margin-top: 5px; font-size: 0.7em; white-space: pre-wrap; word-break: break-all;">${message.text}</pre>
-                    </details>
-                </div>
-            `;
-            
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-        
-        // 显示消息
-        function displayMessage({ senderId, text, timestamp, isSelf }) {
-            const messageEl = document.createElement('div');
-            messageEl.className = `message ${isSelf ? 'sent' : 'received'}`;
-            
-            const senderInfo = users.get(senderId) || {
-                name: senderId.slice(24, 40),
-                email: ''
-            };
-            
-            const timeString = new Date(timestamp).toLocaleTimeString();
-            
-            messageEl.innerHTML = `
-                <div class="sender-info">
-                    <span class="sender-name">${senderInfo.name} <span class="sender-id">[${senderId.slice(24, 40)}]</span></span>
-                    <span class="message-time">${timeString}</span>
-                </div>
-            `;
-
-            const messageTextEl = document.createElement('div');
-            messageTextEl.className = 'message-text';
-            messageTextEl.textContent = text;
-            messageEl.appendChild(messageTextEl);
-
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-        
-        // 更新用户列表
-        function updateUserList(userList) {
-            userListEl.innerHTML = '';
-            users.clear();
-            
-            debugLog(`更新用户列表，共 ${userList.length} 个用户`);
-            
-            userList.forEach(user => {
-                users.set(user.id, user);
-                
-                const userEl = document.createElement('div');
-                userEl.className = 'user-item';
-                if (user.id === userId) {
-                    userEl.classList.add('self');
-                }
-                
-                const idDisplay = user.id.slice(24, 40);
-                
-                userEl.innerHTML = `
-                    <div class="user-name">${user.name}${user.id === userId ? ' (你)' : ''}</div>
-                    <div class="user-id">${idDisplay}</div>
-                    ${user.email ? `<div class="user-email">${user.email}</div>` : ''}
-                `;
-                
-                userListEl.appendChild(userEl);
-            });
-            
-            if (userList.length === 0) {
-                userListEl.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">暂无用户</div>';
-            }
-        }
-        
-        // 发送文本消息
-        async function sendMessage() {
-            const messageText = messageInputEl.value.trim();
-            if (!messageText) return;
-            
-            if (!publicKey) {
-                showNotification('请先导入或生成公钥', 'warning');
-                return;
-            }
-            
-            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                showNotification('WebSocket未连接', 'error');
-                return;
-            }
-            
-            try {
-                debugLog('开始加密消息...');
-                
-                const encrypted = await encryptForAllUsers(messageText);
-                
-                debugLog(`消息加密成功`);
-                
-                websocket.send(JSON.stringify({
-                    type: 'message',
-                    encryptedData: encrypted
-                }));
-                
-                messageInputEl.value = '';
-                
-            } catch (error) {
-                debugLog('加密失败: ' + error.message);
-                showNotification('加密失败: ' + error.message, 'error');
-            }
-        }
-        
-        // 密钥管理相关函数
-        async function loadLocalKeys() {
-            try {
-                privateKey = localStorage.getItem('pgpPrivateKey') || '';
-                publicKey = localStorage.getItem('pgpPublicKey') || '';
-                
-                if (publicKey) {
-                    debugLog('正在解析本地公钥...');
-                    const pubKey = await openpgp.readKey({ armoredKey: publicKey });
-                    const userID = pubKey.users[0].userID;
-                    
-                    userId = pubKey.getKeyID().toHex();
-                    userName = userID?.name || '匿名';
-                    userEmail = userID?.email || '';
-                    
-                    keyIdEl.textContent = userId;
-                    debugLog('本地密钥加载成功');
-                }
-            } catch (error) {
-                debugLog('公钥解析失败: ' + error.message);
-                showNotification('本地密钥解析失败: ' + error.message, 'error');
-            }
-        }
-        
-        async function importKey(type) {
-            return new Promise((resolve) => {
-                const fileInput = document.createElement('input');
-                fileInput.type = 'file';
-                fileInput.accept = '.asc,.pgp,.txt';
-                
-                fileInput.onchange = async (e) => {
-                    const file = e.target.files[0];
-                    if (!file) {
-                        resolve();
-                        return;
-                    }
-                    
-                    try {
-                        debugLog(`开始导入${type}密钥文件: ${file.name}`);
-                        let text = await file.text();
-                        
-                        if (type === 'public') {
-                            const pubKey = await openpgp.readKey({ armoredKey: text });
-                            if (pubKey.isPrivate()) {
-                                throw new Error('这不是一个有效的公钥');
-                            }
-                            
-                            publicKey = text;
-                            localStorage.setItem('pgpPublicKey', publicKey);
-                            
-                            const userID = pubKey.users[0].userID;
-                            userId = pubKey.getKeyID().toHex();
-                            userName = userID?.name || '匿名';
-                            userEmail = userID?.email || '';
-                            
-                            keyIdEl.textContent = userId;
-                            showNotification('公钥导入成功');
-                            debugLog('公钥导入成功，用户ID: ' + userId);
-                            
-                            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                                registerUser();
-                            }
-                            
-                        } else if (type === 'private') {
-                            const privKey = await openpgp.readPrivateKey({ armoredKey: text });
-                            if (!privKey.isPrivate()) {
-                                throw new Error('这不是一个有效的私钥');
-                            }
-                            
-                            privateKey = text;
-                            localStorage.setItem('pgpPrivateKey', privateKey);
-                            
-                            if (!publicKey) {
-                                publicKey = privKey.toPublic().armor();
-                                localStorage.setItem('pgpPublicKey', publicKey);
-                                
-                                const userID = privKey.users[0].userID;
-                                userId = privKey.getKeyID().toHex();
-                                userName = userID?.name || '匿名';
-                                userEmail = userID?.email || '';
-                                
-                                keyIdEl.textContent = userId;
-                                
-                                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                                    registerUser();
-                                }
-                            }
-                            
-                            showNotification('私钥导入成功');
-                            debugLog('私钥导入成功');
-                        }
-                        
-                    } catch (error) {
-                        debugLog(`${type}密钥导入失败: ` + error.message);
-                        showNotification(`${type}密钥导入失败: ` + error.message, 'error');
-                    }
-                    
-                    resolve();
-                };
-                
-                fileInput.click();
-            });
-        }
-        
-        async function copyPublicKey() {
-            if (!publicKey) {
-                showNotification('没有可复制的公钥', 'warning');
-                return;
-            }
-            
-            try {
-                await navigator.clipboard.writeText(publicKey);
-                showNotification('公钥已复制到剪贴板');
-            } catch (error) {
-                const textArea = document.createElement('textarea');
-                textArea.value = publicKey;
-                document.body.appendChild(textArea);
-                textArea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textArea);
-                showNotification('公钥已复制到剪贴板');
-            }
-        }
-        
-        async function generateNewKeys() {
-            try {
-                debugLog('开始生成新密钥对...');
-                showNotification('正在生成密钥，请稍候...', 'warning');
-                
-                const { privateKey: privKey, publicKey: pubKey } = await openpgp.generateKey({
-                    type: 'ecc',
-                    curve: 'curve25519',
-                    userIDs: [{ 
-                        name: prompt('请输入您的名字') || `用户${Math.floor(Math.random() * 1000)}`,
-                        email: prompt('请输入您的邮箱') || `user${Math.floor(Math.random() * 1000)}@example.com`
-                    }],
-                    passphrase: ''
-                });
-                
-                debugLog('密钥对生成完成');
-                
-                privateKey = privKey;
-                publicKey = pubKey;
-                
-                localStorage.setItem('pgpPrivateKey', privateKey);
-                localStorage.setItem('pgpPublicKey', publicKey);
-                debugLog('密钥已保存到本地存储');
-                
-                const pubKeyObj = await openpgp.readKey({ armoredKey: publicKey });
-                const userID = pubKeyObj.users[0].userID;
-                userId = pubKeyObj.getKeyID().toHex();
-                userName = userID?.name || '匿名';
-                userEmail = userID?.email || '';
-                
-                keyIdEl.textContent = userId;
-                debugLog('密钥生成成功，用户ID: ' + userId);
-                
-                showNotification('新密钥已生成');
-                
-                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                    registerUser();
-                }
-                
-            } catch (error) {
-                debugLog('生成密钥失败: ' + error.message);
-                showNotification('生成密钥失败: ' + error.message, 'error');
-                console.error('完整错误信息:', error);
-            }
-        }
-        
-        // 事件监听器设置
-        function setupEventListeners() {
-            sendButtonEl.addEventListener('click', sendMessage);
-            messageInputEl.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                }
-            });
-            
-            generateKeysBtn.addEventListener('click', generateNewKeys);
-            importPublicKeyBtn.addEventListener('click', () => importKey('public'));
-            importPrivateKeyBtn.addEventListener('click', () => importKey('private'));
-            copyPublicKeyBtn.addEventListener('click', copyPublicKey);
-            
-            // 文件相关事件
-            fileBtnEl.addEventListener('click', () => {
-                fileInputEl.click();
-            });
-            
-            fileInputEl.addEventListener('change', (e) => {
-                handleFiles(e.target.files);
-                e.target.value = ''; // 清空选择
-            });
-            
-            // 语音相关事件
-            voiceBtnEl.addEventListener('click', toggleVoiceRecording);
-        }
-        
-        // 初始化应用
-        document.addEventListener('DOMContentLoaded', async () => {
-            debugLog('应用初始化...');
-            
-            // 初始化文件和语音功能
-            initFileDropSupport();
-            await initVoiceSupport();
-            
-            const roomIdFromURL = getRoomIdFromURL();
-            
-            if (roomIdFromURL) {
-                roomId = roomIdFromURL;
-                debugLog(`从URL参数获取房间ID: ${roomId}`);
-                showNotification(`正在加入房间: ${roomId.slice(0, 8)}...`, 'warning');
-            } else {
-                try {
-                    roomId = await fetchRoomId();
-                    debugLog(`创建新房间: ${roomId}`);
-                    
-                    updateURLWithRoomId(roomId);
-                    showNotification(`已创建新房间: ${roomId.slice(0, 8)}...`);
-                } catch (error) {
-                    debugLog('获取房间 ID 失败: ' + error.message);
-                    showNotification('获取房间 ID 失败', 'error');
-                    return;
-                }
-            }
-            
-            document.getElementById('roomName').textContent = `E2EE 聊天室 #${roomId.slice(0, 25)}...`;
-            roomUrlEl.innerHTML = `
-                ${window.location.href}
-                <button id="copyRoomLink" style="margin-left: 10px; padding: 4px 8px; background: var(--primary); border: none; border-radius: 4px; color: white; cursor: pointer;">
-                    复制链接
-                </button>
-            `;
-            
-            document.getElementById('copyRoomLink').addEventListener('click', () => {
-                navigator.clipboard.writeText(window.location.href)
-                    .then(() => showNotification('房间链接已复制'))
-                    .catch(err => showNotification('复制失败: ' + err.message, 'error'));
-            });
-            
-            await loadLocalKeys();
-            await connectWebSocket();
-            setupEventListeners();
-            
-            showNotification('聊天室已准备就绪，支持文件传输和语音消息');
-        });
-
-        // 将一些函数暴露到全局作用域以供 HTML 内联事件使用
-        window.playVoiceMessage = playVoiceMessage;
     </script>
 </body>
 </html>
