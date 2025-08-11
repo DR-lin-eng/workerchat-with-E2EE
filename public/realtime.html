@@ -669,8 +669,8 @@
         let playbackAudioContext = null;
         let audioQueue = [];
         let isPlayingAudio = false;
-        let audioChunkBuffer = [];
-        let audioBufferTimeout = null;
+        let audioStreamBuffer = new Map(); // 按用户ID存储音频流
+        let audioWorklets = new Map(); // 音频处理器
         
         // DOM元素
         const userListEl = document.getElementById('userList');
@@ -2060,22 +2060,15 @@
                     mimeType: 'audio/webm;codecs=opus'
                 });
                 
-                let audioChunks = [];
                 liveMediaRecorder.ondataavailable = async (event) => {
                     if (event.data.size > 0) {
-                        audioChunks.push(event.data);
-                        
-                        // 每收集到一定数据就发送
-                        if (audioChunks.length >= 2) {
-                            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                            await sendLiveAudioChunk(audioBlob);
-                            audioChunks = [];
-                        }
+                        // 立即发送每个音频块，减少延迟
+                        await sendLiveAudioChunk(event.data);
                     }
                 };
                 
-                // 开始录制，每500ms产生一个数据块
-                liveMediaRecorder.start(500);
+                // 开始录制，每200ms产生一个数据块，减少延迟
+                liveMediaRecorder.start(200);
                 
                 isLiveVoiceActive = true;
                 liveVoiceBtnEl.textContent = '📞 停止实时语音';
@@ -2118,6 +2111,19 @@
             
             isLiveVoiceActive = false;
             liveVoiceBtnEl.textContent = '📞 实时语音';
+            
+            // 清理音频流缓冲区
+            audioStreamBuffer.clear();
+            
+            // 清理音频指示器
+            if (audioIndicatorElement && audioIndicatorElement.parentNode) {
+                audioIndicatorElement.parentNode.removeChild(audioIndicatorElement);
+                audioIndicatorElement = null;
+            }
+            if (audioIndicatorTimeout) {
+                clearTimeout(audioIndicatorTimeout);
+                audioIndicatorTimeout = null;
+            }
             liveVoiceBtnEl.style.background = '';
             
             // 隐藏实时语音控制界面
@@ -2255,15 +2261,144 @@
                 
                 console.log(`接收到音频数据: ${audioData.length} 字节`);
                 
-                // 显示音频接收指示器
-                showAudioReceiveIndicator();
-                
-                // 注意：MediaRecorder 的实时音频块无法直接播放
-                // 这需要更复杂的音频流处理或使用 WebRTC
-                console.log('实时音频功能需要 WebRTC 或专门的音频流协议支持');
+                // 使用音频流播放器处理数据
+                await processAudioStream(message.senderId, audioData);
                 
             } catch (error) {
                 console.error('处理实时音频失败:', error);
+            }
+        }
+        
+        // 处理音频流数据
+        async function processAudioStream(senderId, audioData) {
+            try {
+                // 初始化音频上下文
+                const audioContext = await initPlaybackAudioContext();
+                
+                // 为每个发送者创建独立的音频流处理器
+                if (!audioStreamBuffer.has(senderId)) {
+                    audioStreamBuffer.set(senderId, {
+                        chunks: [],
+                        isPlaying: false,
+                        lastPlayTime: 0
+                    });
+                }
+                
+                const streamData = audioStreamBuffer.get(senderId);
+                streamData.chunks.push(audioData);
+                
+                // 如果当前没有在播放，开始播放队列中的音频
+                if (!streamData.isPlaying) {
+                    playAudioQueue(senderId, audioContext);
+                }
+                
+                // 显示音频接收指示器
+                showAudioReceiveIndicator();
+                
+            } catch (error) {
+                console.error('处理音频流失败:', error);
+            }
+        }
+        
+        // 播放音频队列
+        async function playAudioQueue(senderId, audioContext) {
+            const streamData = audioStreamBuffer.get(senderId);
+            if (!streamData || streamData.chunks.length === 0) {
+                return;
+            }
+            
+            streamData.isPlaying = true;
+            
+            try {
+                // 取出第一个音频块
+                const audioChunk = streamData.chunks.shift();
+                
+                // 尝试解码并播放
+                await playAudioChunk(audioChunk, audioContext);
+                
+                // 继续播放队列中的下一个音频块
+                if (streamData.chunks.length > 0) {
+                    setTimeout(() => {
+                        playAudioQueue(senderId, audioContext);
+                    }, 50); // 50ms间隔
+                } else {
+                    streamData.isPlaying = false;
+                }
+                
+            } catch (error) {
+                console.error('播放音频队列失败:', error);
+                streamData.isPlaying = false;
+                
+                // 如果解码失败，尝试播放下一个块
+                if (streamData.chunks.length > 0) {
+                    setTimeout(() => {
+                        playAudioQueue(senderId, audioContext);
+                    }, 100);
+                }
+            }
+        }
+        
+        // 播放单个音频块
+        async function playAudioChunk(audioData, audioContext) {
+            try {
+                // 创建音频blob
+                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                
+                // 尝试解码音频数据
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // 创建音频源并播放
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                
+                // 添加音量控制
+                const gainNode = audioContext.createGain();
+                gainNode.gain.value = 0.8;
+                
+                source.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                // 播放音频
+                source.start(0);
+                
+                console.log('成功播放音频块');
+                
+            } catch (error) {
+                // 如果Web Audio API解码失败，尝试使用HTML Audio元素
+                console.log('Web Audio API解码失败，尝试HTML Audio播放');
+                await fallbackHtmlAudioPlay(audioData);
+            }
+        }
+        
+        // 降级到HTML Audio播放
+        async function fallbackHtmlAudioPlay(audioData) {
+            try {
+                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                
+                audio.volume = 0.5; // 降低音量避免重叠
+                audio.preload = 'auto';
+                
+                // 设置清理
+                const cleanup = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    audio.removeEventListener('ended', cleanup);
+                    audio.removeEventListener('error', cleanup);
+                };
+                
+                audio.addEventListener('ended', cleanup);
+                audio.addEventListener('error', cleanup);
+                
+                // 播放音频
+                await audio.play();
+                console.log('HTML Audio播放成功');
+                
+            } catch (error) {
+                console.log('HTML Audio播放也失败:', error);
+                // 最后的降级方案：只显示指示器
+                showAudioReceiveIndicator();
             }
         }
         
@@ -2305,31 +2440,46 @@
         }
         
         // 显示音频接收指示器
+        let audioIndicatorTimeout = null;
+        let audioIndicatorElement = null;
+        
         function showAudioReceiveIndicator() {
-            // 在界面上显示正在接收音频的指示
-            const indicator = document.createElement('div');
-            indicator.style.cssText = `
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background: rgba(255, 165, 0, 0.9);
-                color: white;
-                padding: 10px 20px;
-                border-radius: 20px;
-                font-size: 14px;
-                z-index: 1000;
-                pointer-events: none;
-            `;
-            indicator.textContent = '🔊 接收到音频数据';
-            document.body.appendChild(indicator);
+            // 如果已经有指示器，重置计时器
+            if (audioIndicatorElement) {
+                clearTimeout(audioIndicatorTimeout);
+            } else {
+                // 创建新的指示器
+                audioIndicatorElement = document.createElement('div');
+                audioIndicatorElement.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    background: rgba(39, 174, 96, 0.9);
+                    color: white;
+                    padding: 8px 15px;
+                    border-radius: 15px;
+                    font-size: 12px;
+                    z-index: 1000;
+                    pointer-events: none;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                `;
+                audioIndicatorElement.innerHTML = `
+                    <div style="width: 8px; height: 8px; background: #27ae60; border-radius: 50%; animation: pulse 1s infinite;"></div>
+                    🔊 实时音频
+                `;
+                document.body.appendChild(audioIndicatorElement);
+            }
             
-            // 2秒后移除指示器
-            setTimeout(() => {
-                if (indicator.parentNode) {
-                    indicator.parentNode.removeChild(indicator);
+            // 设置自动移除计时器
+            audioIndicatorTimeout = setTimeout(() => {
+                if (audioIndicatorElement && audioIndicatorElement.parentNode) {
+                    audioIndicatorElement.parentNode.removeChild(audioIndicatorElement);
+                    audioIndicatorElement = null;
                 }
-            }, 2000);
+            }, 3000);
         }
         
         // 降级音频播放方法
