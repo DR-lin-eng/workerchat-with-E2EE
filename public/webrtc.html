@@ -394,6 +394,84 @@
         .key-buttons button:hover {
             background: var(--secondary);
         }
+        
+        .room-url {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.8em;
+            margin-bottom: 10px;
+            word-break: break-all;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+        
+        .room-url:hover {
+            background: rgba(0, 0, 0, 0.4);
+        }
+        
+        .tool-btn.recording {
+            background: var(--danger);
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.6; }
+            100% { opacity: 1; }
+        }
+        
+        .message.voice {
+            background: rgba(255, 165, 0, 0.3);
+            border: 1px solid #ffa500;
+        }
+        
+        .voice-message {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .voice-icon {
+            font-size: 1.5em;
+            color: #ffa500;
+        }
+        
+        .voice-duration {
+            font-size: 0.9em;
+            color: #ccc;
+        }
+        
+        .play-btn {
+            padding: 8px 12px;
+            background: #ffa500;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 1em;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .play-btn:hover {
+            background: #ff8c00;
+        }
+        
+        .voice-waveform {
+            flex: 1;
+            height: 30px;
+            background: rgba(255, 165, 0, 0.2);
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8em;
+        }
     </style>
 </head>
 <body>
@@ -428,6 +506,10 @@
         <div class="panel chat-area">
             <div class="header">
                 <h2 id="roomName">P2P 文件传输聊天室</h2>
+                <div class="room-url" id="roomUrl"></div>
+                <div style="font-size: 0.8em; color: #ccc;">
+                    支持 WebRTC 点对点文件传输，需要网络环境支持
+                </div>
             </div>
             
             <div class="messages" id="messages"></div>
@@ -438,6 +520,10 @@
                         <button class="tool-btn" id="fileBtn" title="发送文件">
                             📎 文件
                         </button>
+                        <button class="tool-btn" id="voiceBtn" title="语音消息">
+                            🎤 语音
+                        </button>
+                        <span id="voiceStatus" style="font-size: 0.8em; color: #ccc;"></span>
                     </div>
                     <textarea id="messageInput" placeholder="输入消息..." disabled></textarea>
                 </div>

@@ -299,6 +299,68 @@
             background: rgba(255, 255, 255, 0.2);
         }
         
+        .tool-btn.recording {
+            background: var(--danger);
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.6; }
+            100% { opacity: 1; }
+        }
+        
+        .message.voice {
+            background: rgba(255, 165, 0, 0.3);
+            border: 1px solid #ffa500;
+        }
+        
+        .voice-message {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .voice-icon {
+            font-size: 1.5em;
+            color: #ffa500;
+        }
+        
+        .voice-duration {
+            font-size: 0.9em;
+            color: #ccc;
+        }
+        
+        .play-btn {
+            padding: 8px 12px;
+            background: #ffa500;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 1em;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .play-btn:hover {
+            background: #ff8c00;
+        }
+        
+        .voice-waveform {
+            flex: 1;
+            height: 30px;
+            background: rgba(255, 165, 0, 0.2);
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8em;
+        }
+        
         textarea {
             flex: 1;
             padding: 12px;
@@ -404,6 +466,22 @@
             background: var(--secondary);
         }
         
+        .room-url {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.8em;
+            margin-bottom: 10px;
+            word-break: break-all;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+        
+        .room-url:hover {
+            background: rgba(0, 0, 0, 0.4);
+        }
+        
         .transfer-status {
             position: fixed;
             bottom: 20px;
@@ -466,6 +544,7 @@
         <div class="panel chat-area">
             <div class="header">
                 <h2 id="roomName">实时文件传输聊天室</h2>
+                <div class="room-url" id="roomUrl"></div>
                 <div style="font-size: 0.8em; color: #ccc;">
                     支持 WebSocket 实时文件传输，文件完整性 MD5 验证
                 </div>
@@ -479,6 +558,10 @@
                         <button class="tool-btn" id="fileBtn" title="发送文件">
                             📎 文件
                         </button>
+                        <button class="tool-btn" id="voiceBtn" title="语音消息">
+                            🎤 语音
+                        </button>
+                        <span id="voiceStatus" style="font-size: 0.8em; color: #ccc;"></span>
                     </div>
                     <textarea id="messageInput" placeholder="输入消息..." disabled></textarea>
                 </div>
@@ -508,6 +591,12 @@
         let fileTransferManager = null;
         let activeTransfers = new Map(); // transferId -> transfer info
         
+        // 语音录制相关
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let recordingStartTime = 0;
+        
         // DOM元素
         const userListEl = document.getElementById('userList');
         const messagesEl = document.getElementById('messages');
@@ -522,14 +611,18 @@
         const connectionStatusEl = document.getElementById('connectionStatus');
         const fileInputEl = document.getElementById('fileInput');
         const fileBtnEl = document.getElementById('fileBtn');
+        const voiceBtnEl = document.getElementById('voiceBtn');
+        const voiceStatusEl = document.getElementById('voiceStatus');
         const transferStatusEl = document.getElementById('transferStatus');
         const transferListEl = document.getElementById('transferList');
+        const roomUrlEl = document.getElementById('roomUrl');
         
         // WebSocket 文件传输管理器
         class FileTransferManager {
             constructor(websocket) {
                 this.websocket = websocket;
                 this.chunkSize = 64 * 1024; // 64KB chunks
+                this.pendingTransfers = new Map(); // 存储待处理的传输请求
             }
             
             async initiateFileTransfer(targetUserId, file) {
@@ -573,11 +666,22 @@
             handleTransferRequest(message) {
                 const { transferId, senderId, metadata } = message;
                 
+                // 临时存储 metadata，用于后续创建接收会话
+                this.pendingTransfers = this.pendingTransfers || new Map();
+                this.pendingTransfers.set(transferId, { senderId, metadata });
+                
                 // 显示接收请求
                 displayFileTransferRequest(senderId, transferId, metadata);
             }
             
             acceptTransfer(transferId, senderId) {
+                // 获取待处理的传输信息
+                const pendingTransfer = this.pendingTransfers?.get(transferId);
+                if (!pendingTransfer) {
+                    console.error('Pending transfer not found:', transferId);
+                    return;
+                }
+
                 // 发送接受响应
                 const response = {
                     type: 'fileTransferResponse',
@@ -588,14 +692,18 @@
 
                 this.websocket.send(JSON.stringify(response));
                 
-                // 创建接收会话
+                // 创建接收会话，包含 metadata
                 activeTransfers.set(transferId, {
                     type: 'receive',
                     senderId: senderId,
+                    metadata: pendingTransfer.metadata,
                     receivedChunks: new Map(),
                     progress: 0,
                     status: 'receiving'
                 });
+                
+                // 清理待处理的传输信息
+                this.pendingTransfers.delete(transferId);
                 
                 this.updateTransferStatus();
                 displaySystemMessage(`已接受来自 ${getUserName(senderId)} 的文件传输`);
@@ -610,6 +718,12 @@
                 };
 
                 this.websocket.send(JSON.stringify(response));
+                
+                // 清理待处理的传输信息
+                if (this.pendingTransfers) {
+                    this.pendingTransfers.delete(transferId);
+                }
+                
                 displaySystemMessage(`已拒绝来自 ${getUserName(senderId)} 的文件传输`);
             }
             
@@ -785,6 +899,11 @@
                     this.updateTransferStatus();
                     displaySystemMessage(`${getUserName(message.senderId)} 取消了文件传输`);
                 }
+                
+                // 清理待处理的传输信息
+                if (this.pendingTransfers) {
+                    this.pendingTransfers.delete(message.transferId);
+                }
             }
             
             updateTransferStatus() {
@@ -869,8 +988,14 @@
             // 连接 WebSocket
             connectWebSocket();
             
+            // 初始化语音功能
+            initVoiceSupport();
+            
             // 绑定事件
             bindEvents();
+            
+            // 显示房间链接
+            displayRoomUrl();
         }
         
         function bindEvents() {
@@ -889,6 +1014,7 @@
             
             fileBtnEl.addEventListener('click', () => fileInputEl.click());
             fileInputEl.addEventListener('change', handleFileSelect);
+            voiceBtnEl.addEventListener('click', toggleVoiceRecording);
         }
         
         function getRoomIdFromUrl() {
@@ -964,6 +1090,9 @@
                     break;
                 case 'fileTransferCancelNotification':
                     fileTransferManager.handleTransferCancel(message);
+                    break;
+                case 'voiceNotification':
+                    handleVoiceMessage(message);
                     break;
                 case 'error':
                     showNotification(message.message, 'error');
@@ -1320,7 +1449,7 @@
             }
         }
         
-        async function encryptForAllUsers(text) {
+        async function encryptForAllUsers(data) {
             const publicKeys = Array.from(users.values()).map(user => user.publicKey);
             
             if (publicKeys.length === 0) {
@@ -1331,7 +1460,14 @@
                 publicKeys.map(key => openpgp.readKey({ armoredKey: key }))
             );
             
-            const message = await openpgp.createMessage({ text: text });
+            let message;
+            if (typeof data === 'string') {
+                message = await openpgp.createMessage({ text: data });
+            } else {
+                // 处理二进制数据（如语音）
+                message = await openpgp.createMessage({ binary: data });
+            }
+            
             const encrypted = await openpgp.encrypt({
                 message: message,
                 encryptionKeys: keys,
@@ -1415,6 +1551,238 @@
             setTimeout(() => {
                 notificationEl.classList.remove('show');
             }, 3000);
+        }
+        
+        // 显示房间链接
+        function displayRoomUrl() {
+            const currentUrl = window.location.href;
+            roomUrlEl.textContent = currentUrl;
+            roomUrlEl.title = '点击复制房间链接';
+            roomUrlEl.addEventListener('click', () => {
+                navigator.clipboard.writeText(currentUrl).then(() => {
+                    showNotification('房间链接已复制到剪贴板');
+                }).catch(err => {
+                    showNotification('复制失败: ' + err.message, 'error');
+                });
+            });
+        }
+        
+        // 初始化语音功能
+        async function initVoiceSupport() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await sendVoiceMessage(audioBlob);
+                    audioChunks = [];
+                };
+                
+                voiceBtnEl.disabled = false;
+                console.log('语音功能初始化完成');
+                
+            } catch (error) {
+                console.log(`语音功能初始化失败: ${error.message}`);
+                voiceBtnEl.disabled = true;
+                voiceStatusEl.textContent = '麦克风权限被拒绝';
+            }
+        }
+        
+        // 开始/停止录音
+        function toggleVoiceRecording() {
+            if (!mediaRecorder) {
+                showNotification('语音功能未初始化', 'error');
+                return;
+            }
+            
+            if (!publicKey) {
+                showNotification('请先导入或生成密钥', 'warning');
+                return;
+            }
+            
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        }
+        
+        function startRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                audioChunks = [];
+                mediaRecorder.start();
+                isRecording = true;
+                recordingStartTime = Date.now();
+                
+                voiceBtnEl.classList.add('recording');
+                voiceBtnEl.textContent = '🔴 停止';
+                voiceStatusEl.textContent = '正在录音...';
+                
+                showNotification('开始录音，再次点击停止');
+            }
+        }
+        
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                isRecording = false;
+                
+                voiceBtnEl.classList.remove('recording');
+                voiceBtnEl.textContent = '🎤 语音';
+                voiceStatusEl.textContent = '处理中...';
+            }
+        }
+        
+        async function sendVoiceMessage(audioBlob) {
+            try {
+                const duration = Math.round((Date.now() - recordingStartTime) / 1000);
+                const voiceId = generateId();
+                
+                // 读取音频数据
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioData = new Uint8Array(arrayBuffer);
+                
+                // 加密语音数据
+                const encryptedVoiceData = await encryptForAllUsers(audioData);
+                
+                const voiceMetadata = {
+                    voiceId: voiceId,
+                    duration: duration,
+                    sampleRate: 48000,
+                    format: 'webm'
+                };
+                
+                const voiceMessage = {
+                    type: 'voice',
+                    metadata: voiceMetadata,
+                    encryptedVoiceData: encryptedVoiceData
+                };
+                
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.send(JSON.stringify(voiceMessage));
+                }
+                
+                voiceStatusEl.textContent = '';
+                showNotification(`语音消息发送成功 (${duration}秒)`);
+                
+            } catch (error) {
+                console.error('语音消息发送失败:', error);
+                voiceStatusEl.textContent = '';
+                showNotification('语音消息发送失败: ' + error.message, 'error');
+            }
+        }
+        
+        function generateId() {
+            return Date.now().toString(36) + Math.random().toString(36).substr(2);
+        }
+        
+        async function handleVoiceMessage(message) {
+            if (!privateKey) {
+                displayEncryptedVoiceMessage(message);
+                return;
+            }
+            
+            try {
+                // 解密语音数据
+                const encryptedMessage = await openpgp.readMessage({
+                    armoredMessage: message.encryptedVoiceData
+                });
+                
+                const privKey = await openpgp.readPrivateKey({
+                    armoredKey: privateKey
+                });
+                
+                const { data: decrypted } = await openpgp.decrypt({
+                    message: encryptedMessage,
+                    decryptionKeys: privKey,
+                    format: 'binary'
+                });
+                
+                // 创建音频 Blob
+                const audioBlob = new Blob([decrypted], { type: 'audio/webm' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                
+                displayVoiceMessage(message.senderId, message.metadata, audioUrl, message.timestamp);
+                
+            } catch (error) {
+                console.error('语音消息解密失败:', error);
+                displayEncryptedVoiceMessage(message);
+            }
+        }
+        
+        function displayVoiceMessage(senderId, metadata, audioUrl, timestamp) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${senderId === userId ? 'sent' : 'received'} voice`;
+            
+            const senderName = getUserName(senderId);
+            const time = new Date(timestamp).toLocaleTimeString();
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="voice-message">
+                    <div class="voice-icon">🎵</div>
+                    <div class="voice-waveform">
+                        语音消息 ${metadata.duration}秒
+                    </div>
+                    <button class="play-btn" onclick="playVoiceMessage('${audioUrl}')">
+                        ▶️
+                    </button>
+                </div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function displayEncryptedVoiceMessage(message) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message received voice';
+            
+            const senderName = getUserName(message.senderId);
+            const time = new Date(message.timestamp).toLocaleTimeString();
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="voice-message">
+                    <div class="voice-icon">🔒</div>
+                    <div class="voice-waveform">
+                        加密语音消息 (需要私钥解密)
+                    </div>
+                </div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function playVoiceMessage(audioUrl) {
+            const audio = new Audio(audioUrl);
+            audio.play().catch(error => {
+                console.error('播放语音失败:', error);
+                showNotification('播放语音失败', 'error');
+            });
         }
         
         // 页面加载完成后初始化
