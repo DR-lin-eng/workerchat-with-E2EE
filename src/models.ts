@@ -4,8 +4,11 @@ export enum Permission {
     SEND_MESSAGES = 'send_messages', 
     BAN_USERS = 'ban_users',
     GENERATE_INVITE_LINKS = 'generate_invite_links',
-    MANAGE_PERMISSIONS = 'manage_permissions'
+    MANAGE_PERMISSIONS = 'manage_permissions',
+    SEND_FILES = 'send_files',
+    SEND_VOICE = 'send_voice'
 }
+
 // 用户组
 export enum UserRole {
     GUEST = 'guest',
@@ -44,14 +47,13 @@ export interface UserInfo {
     email: string;
     publicKey: string;
     webSocket: WebSocket;
-    role: UserRole;  // 新增角色字段
-    ipAddress?: IP;  // 新增IP字段用于封禁
+    role: UserRole;
+    ipAddress?: IP;
 }
 
 // 封禁记录
 export interface BanRecord {
     type: 'ip' | 'keyFingerprint';
-    // 禁止简写！！！
     value: IP|string;
 }
 
@@ -60,6 +62,33 @@ export interface UserProfile {
     id: string; // 即keyid(long)
     name: string;
     email: string;
+}
+
+// 文件分片信息
+export interface FileChunk {
+    chunkId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    data: string; // Base64 encoded encrypted chunk data
+}
+
+// 文件元数据
+export interface FileMetadata {
+    fileId: string;
+    fileName: string;
+    fileSize: number;
+    fileType: string;
+    totalChunks: number;
+    chunkSize: number;
+    hash?: string; // 文件哈希用于验证完整性
+}
+
+// 语音消息元数据
+export interface VoiceMetadata {
+    voiceId: string;
+    duration: number; // 音频时长（秒）
+    sampleRate: number;
+    format: string; // 'webm', 'mp3', etc.
 }
 
 export interface RegisterMessage {
@@ -82,9 +111,52 @@ export interface UserListMessage {
     }>;
 }
 
+// 普通文本消息
 export interface ChatMessage {
     type: 'message';
     encryptedData: string;
+}
+
+// 文件开始传输消息
+export interface FileStartMessage {
+    type: 'fileStart';
+    metadata: FileMetadata;
+    encryptedMetadata: string; // 加密的文件元数据
+}
+
+// 文件分片消息
+export interface FileChunkMessage {
+    type: 'fileChunk';
+    fileId: string;
+    chunk: FileChunk;
+    encryptedChunk: string; // 加密的分片数据
+}
+
+// 文件传输完成消息
+export interface FileCompleteMessage {
+    type: 'fileComplete';
+    fileId: string;
+}
+
+// 语音消息
+export interface VoiceMessage {
+    type: 'voice';
+    metadata: VoiceMetadata;
+    encryptedVoiceData: string; // 加密的语音数据
+}
+
+// 文件传输状态请求
+export interface FileStatusRequest {
+    type: 'fileStatus';
+    fileId: string;
+}
+
+// 文件传输状态响应
+export interface FileStatusResponse {
+    type: 'fileStatusResponse';
+    fileId: string;
+    receivedChunks: number[];
+    isComplete: boolean;
 }
 
 // 加密信息
@@ -95,8 +167,63 @@ export interface EncryptedMessage {
     timestamp: number;
 }
 
+// 文件开始传输通知
+export interface FileStartNotification {
+    type: 'fileStartNotification';
+    senderId: string;
+    fileId: string;
+    metadata: FileMetadata;
+    timestamp: number;
+}
+
+// 文件分片通知
+export interface FileChunkNotification {
+    type: 'fileChunkNotification';
+    senderId: string;
+    fileId: string;
+    chunk: FileChunk;
+    timestamp: number;
+}
+
+// 文件传输完成通知
+export interface FileCompleteNotification {
+    type: 'fileCompleteNotification';
+    senderId: string;
+    fileId: string;
+    timestamp: number;
+}
+
+// 语音消息通知
+export interface VoiceNotification {
+    type: 'voiceNotification';
+    senderId: string;
+    voiceId: string;
+    metadata: VoiceMetadata;
+    encryptedVoiceData: string;
+    timestamp: number;
+}
+
 export interface ErrorMessage {
     type: 'error';
     message: string;
 }
 
+// 文件传输进度跟踪
+export interface FileTransferProgress {
+    fileId: string;
+    fileName: string;
+    fileSize: number;
+    uploadedChunks: Set<number>;
+    totalChunks: number;
+    isComplete: boolean;
+    chunks: Map<number, string>; // chunkIndex -> encrypted data
+    metadata?: FileMetadata;
+}
+
+// 语音录制状态
+export enum VoiceRecordingState {
+    IDLE = 'idle',
+    RECORDING = 'recording',
+    PROCESSING = 'processing',
+    SENDING = 'sending'
+}
