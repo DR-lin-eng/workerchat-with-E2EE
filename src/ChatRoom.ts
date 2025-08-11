@@ -3,7 +3,11 @@ import {
     EncryptedMessage, ErrorMessage, UserProfile, UserRole,
     FileStartMessage, FileChunkMessage, FileCompleteMessage, VoiceMessage,
     FileStartNotification, FileChunkNotification, FileCompleteNotification, VoiceNotification,
-    FileStatusRequest, FileStatusResponse, FileTransferProgress
+    FileStatusRequest, FileStatusResponse, FileTransferProgress,
+    WebRTCSignalingMessage, WebRTCSignalingNotification,
+    FileTransferRequest, FileTransferResponse, FileTransferChunk, FileTransferCancel,
+    FileTransferRequestNotification, FileTransferResponseNotification, 
+    FileChunkNotification, FileTransferCancelNotification
 } from "./models";
 import {readKey} from "openpgp";
 
@@ -83,6 +87,21 @@ export class ChatRoom {
                 break;
             case 'fileStatus':
                 this.handleFileStatusRequest(webSocket, message);
+                break;
+            case 'webrtc-signaling':
+                this.handleWebRTCSignaling(webSocket, message);
+                break;
+            case 'fileTransferRequest':
+                this.handleFileTransferRequest(webSocket, message);
+                break;
+            case 'fileTransferResponse':
+                this.handleFileTransferResponse(webSocket, message);
+                break;
+            case 'realtimeFileChunk':
+                this.handleFileTransferChunk(webSocket, message);
+                break;
+            case 'fileTransferCancel':
+                this.handleFileTransferCancel(webSocket, message);
                 break;
             default:
                 this.sendError(webSocket, `Unknown message type: ${message.type}`);
@@ -482,6 +501,164 @@ export class ChatRoom {
         }
 
         return { id, name, email };
+    }
+
+    private handleWebRTCSignaling(webSocket: WebSocket, message: WebRTCSignalingMessage): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找目标用户
+        const targetUser = this.findUserById(message.targetId);
+        if (!targetUser) {
+            this.sendError(webSocket, 'Target user not found');
+            return;
+        }
+
+        // 转发信令消息给目标用户
+        const notification: WebRTCSignalingNotification = {
+            type: 'webrtc-signaling-notification',
+            senderId: sender.id,
+            data: message.data
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(notification));
+        } catch (error) {
+            this.sendError(webSocket, 'Failed to deliver signaling message');
+        }
+    }
+
+    private handleFileTransferRequest(webSocket: WebSocket, message: FileTransferRequest): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找目标用户
+        const targetUser = this.findUserById(message.targetUserId);
+        if (!targetUser) {
+            this.sendError(webSocket, 'Target user not found');
+            return;
+        }
+
+        // 验证文件大小限制 (例如最大 500MB)
+        const maxFileSize = 500 * 1024 * 1024; // 500MB
+        if (message.metadata.fileSize > maxFileSize) {
+            this.sendError(webSocket, 'File too large');
+            return;
+        }
+
+        // 转发传输请求给目标用户
+        const notification: FileTransferRequestNotification = {
+            type: 'fileTransferRequestNotification',
+            transferId: message.transferId,
+            senderId: sender.id,
+            metadata: message.metadata
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(notification));
+        } catch (error) {
+            this.sendError(webSocket, 'Failed to deliver transfer request');
+        }
+    }
+
+    private handleFileTransferResponse(webSocket: WebSocket, message: FileTransferResponse): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找发起传输的用户
+        const targetUser = this.findUserById(message.senderId);
+        if (!targetUser) {
+            this.sendError(webSocket, 'Original sender not found');
+            return;
+        }
+
+        // 转发响应给发起者
+        const notification: FileTransferResponseNotification = {
+            type: 'fileTransferResponseNotification',
+            transferId: message.transferId,
+            targetUserId: sender.id,
+            accepted: message.accepted
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(notification));
+        } catch (error) {
+            this.sendError(webSocket, 'Failed to deliver transfer response');
+        }
+    }
+
+    private handleFileTransferChunk(webSocket: WebSocket, message: FileTransferChunk): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找目标用户
+        const targetUser = this.findUserById(message.targetUserId);
+        if (!targetUser) {
+            this.sendError(webSocket, 'Target user not found');
+            return;
+        }
+
+        // 验证分片大小
+        const maxChunkSize = 128 * 1024; // 128KB
+        if (message.chunkData.length > maxChunkSize) {
+            this.sendError(webSocket, 'Chunk too large');
+            return;
+        }
+
+        // 转发分片给目标用户
+        const notification: FileChunkNotification = {
+            type: 'realtimeFileChunkNotification',
+            transferId: message.transferId,
+            senderId: sender.id,
+            chunkIndex: message.chunkIndex,
+            chunkData: message.chunkData,
+            isLast: message.isLast
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(notification));
+        } catch (error) {
+            this.sendError(webSocket, 'Failed to deliver file chunk');
+        }
+    }
+
+    private handleFileTransferCancel(webSocket: WebSocket, message: FileTransferCancel): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找目标用户
+        const targetUser = this.findUserById(message.targetUserId);
+        if (!targetUser) {
+            return; // 目标用户不存在，静默处理
+        }
+
+        // 转发取消消息给目标用户
+        const notification: FileTransferCancelNotification = {
+            type: 'fileTransferCancelNotification',
+            transferId: message.transferId,
+            senderId: sender.id
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(notification));
+        } catch (error) {
+            // 静默处理错误
+        }
     }
 
     private generateUserIdFromKey(publicKey: string): string {

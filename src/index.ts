@@ -56,6 +56,29 @@ export default {
             return durableObject.fetch(request);
         }
 
+        // 静态文件服务
+        if (url.pathname === '/webrtc' || url.pathname === '/webrtc.html') {
+            // 重定向到 WebRTC 版本
+            return new Response(null, {
+                status: 302,
+                headers: {
+                    'Location': '/webrtc.html',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            });
+        }
+
+        if (url.pathname === '/realtime' || url.pathname === '/realtime.html') {
+            // 重定向到实时传输版本
+            return new Response(null, {
+                status: 302,
+                headers: {
+                    'Location': '/realtime.html',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            });
+        }
+
         // 404 处理
         return new Response('Not Found', { status: 404 });
     }

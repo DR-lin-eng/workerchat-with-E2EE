@@ -1,0 +1,1436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时文件传输聊天室</title>
+    <script src="https://unpkg.com/openpgp@6.2.0/dist/openpgp.min.js"></script>
+    <style>
+        :root {
+            --primary: #4a6fa5;
+            --secondary: #6b8cbc;
+            --light: #f0f4f8;
+            --dark: #2c3e50;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #1a2a6c, #b21f1f, #1a2a6c);
+            color: var(--light);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+            height: calc(100vh - 40px);
+        }
+        
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            padding-bottom: 15px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        h1, h2, h3 {
+            color: white;
+            margin-bottom: 15px;
+        }
+        
+        .connection-status {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .status-connected { background: var(--success); }
+        .status-connecting { background: var(--warning); }
+        .status-disconnected { background: var(--danger); }
+        
+        .user-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .user-item {
+            padding: 9px;
+            margin-bottom: 10px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .user-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: translateX(5px);
+        }
+        
+        .user-item.self {
+            background: rgba(74, 111, 165, 0.3);
+        }
+        
+        .user-name {
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+        
+        .user-id {
+            font-size: 0.75em;
+            color: #bbb;
+            word-break: break-all;
+            font-family: monospace;
+        }
+        
+        .file-transfer-btn {
+            margin-top: 5px;
+            padding: 4px 8px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+            width: 100%;
+        }
+        
+        .file-transfer-btn:hover {
+            background: var(--secondary);
+        }
+        
+        .file-transfer-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .chat-area {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        
+        .message {
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 10px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        
+        .message.sent {
+            background: var(--primary);
+            align-self: flex-end;
+            margin-left: 20%;
+        }
+        
+        .message.received {
+            background: var(--dark);
+            align-self: flex-start;
+            margin-right: 20%;
+        }
+        
+        .message.file {
+            background: rgba(106, 90, 205, 0.3);
+            border: 1px solid #6a5acd;
+        }
+        
+        .message.system {
+            background: rgba(255, 165, 0, 0.3);
+            border: 1px solid #ffa500;
+            text-align: center;
+            margin: 10px auto;
+            max-width: 60%;
+        }
+        
+        .sender-info {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85em;
+        }
+        
+        .sender-name {
+            color: #4ec9b0;
+        }
+        
+        .message-time {
+            font-size: 0.75em;
+            opacity: 0.7;
+        }
+        
+        .file-message {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .file-icon {
+            font-size: 2em;
+        }
+        
+        .file-info {
+            flex: 1;
+        }
+        
+        .file-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .file-size {
+            font-size: 0.8em;
+            color: #ccc;
+        }
+        
+        .file-hash {
+            font-size: 0.7em;
+            color: #999;
+            font-family: monospace;
+            margin-top: 2px;
+        }
+        
+        .file-progress {
+            margin-top: 5px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .file-progress-bar {
+            height: 100%;
+            background: var(--success);
+            transition: width 0.3s ease;
+        }
+        
+        .download-btn {
+            padding: 5px 10px;
+            background: var(--success);
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+        
+        .cancel-btn {
+            padding: 5px 10px;
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8em;
+            margin-left: 5px;
+        }
+        
+        .input-area {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        
+        .input-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .input-tools {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        
+        .tool-btn {
+            padding: 8px 10px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .tool-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        textarea {
+            flex: 1;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            resize: none;
+            min-height: 60px;
+        }
+        
+        .send-button {
+            padding: 12px 20px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+            height: fit-content;
+        }
+        
+        .send-button:hover {
+            background: var(--secondary);
+        }
+        
+        .send-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            border-radius: 8px;
+            background: var(--success);
+            color: white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            transform: translateX(120%);
+            transition: transform 0.3s ease;
+            max-width: 300px;
+        }
+        
+        .notification.show {
+            transform: translateX(0);
+        }
+        
+        .notification.error {
+            background: var(--danger);
+        }
+        
+        .notification.warning {
+            background: var(--warning);
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .key-management {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .key-info {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+        
+        .key-id {
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 0.8em;
+            color: #4ec9b0;
+        }
+        
+        .key-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        
+        .key-buttons button {
+            padding: 8px 12px;
+            font-size: 0.85em;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .key-buttons button:hover {
+            background: var(--secondary);
+        }
+        
+        .transfer-status {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            min-width: 300px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        .transfer-status.show {
+            display: block;
+        }
+        
+        .transfer-item {
+            padding: 8px;
+            margin-bottom: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+        
+        .transfer-item:last-child {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel manage-area">
+            <div class="header">
+                <h2>在线用户</h2>
+                <div id="connectionStatus" class="connection-status status-disconnected">
+                    未连接
+                </div>
+            </div>
+            <div class="user-list" id="userList">
+                <div style="text-align: center; color: #999; padding: 20px;">
+                    等待连接...
+                </div>
+            </div>
+            <div class="key-management">
+                <h3>密钥管理</h3>
+                <div class="key-info">
+                    <div>你的密钥ID:</div>
+                    <div id="keyId" class="key-id">未注册</div>
+                </div>
+                <div class="key-buttons">
+                    <button id="importPublicKey">导入公钥</button>
+                    <button id="importPrivateKey">导入私钥</button>
+                    <button id="copyPublicKey">复制公钥</button>
+                    <button id="generateKeys">生成密钥</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel chat-area">
+            <div class="header">
+                <h2 id="roomName">实时文件传输聊天室</h2>
+                <div style="font-size: 0.8em; color: #ccc;">
+                    支持 WebSocket 实时文件传输，文件完整性 MD5 验证
+                </div>
+            </div>
+            
+            <div class="messages" id="messages"></div>
+            
+            <div class="input-area">
+                <div class="input-container">
+                    <div class="input-tools">
+                        <button class="tool-btn" id="fileBtn" title="发送文件">
+                            📎 文件
+                        </button>
+                    </div>
+                    <textarea id="messageInput" placeholder="输入消息..." disabled></textarea>
+                </div>
+                <button class="send-button" id="sendButton" disabled>发送</button>
+            </div>
+            
+            <input type="file" id="fileInput" multiple>
+        </div>
+    </div>
+    
+    <div class="notification" id="notification"></div>
+    <div class="transfer-status" id="transferStatus">
+        <h4>传输状态</h4>
+        <div id="transferList"></div>
+    </div>
+
+    <script>
+        // 全局变量
+        let privateKey = '';
+        let publicKey = '';
+        let userId = '';
+        let userName = '';
+        let userEmail = '';
+        let websocket = null;
+        let roomId = '';
+        let users = new Map();
+        let fileTransferManager = null;
+        let activeTransfers = new Map(); // transferId -> transfer info
+        
+        // DOM元素
+        const userListEl = document.getElementById('userList');
+        const messagesEl = document.getElementById('messages');
+        const messageInputEl = document.getElementById('messageInput');
+        const sendButtonEl = document.getElementById('sendButton');
+        const generateKeysBtn = document.getElementById('generateKeys');
+        const importPublicKeyBtn = document.getElementById('importPublicKey');
+        const importPrivateKeyBtn = document.getElementById('importPrivateKey');
+        const copyPublicKeyBtn = document.getElementById('copyPublicKey');
+        const keyIdEl = document.getElementById('keyId');
+        const notificationEl = document.getElementById('notification');
+        const connectionStatusEl = document.getElementById('connectionStatus');
+        const fileInputEl = document.getElementById('fileInput');
+        const fileBtnEl = document.getElementById('fileBtn');
+        const transferStatusEl = document.getElementById('transferStatus');
+        const transferListEl = document.getElementById('transferList');
+        
+        // WebSocket 文件传输管理器
+        class FileTransferManager {
+            constructor(websocket) {
+                this.websocket = websocket;
+                this.chunkSize = 64 * 1024; // 64KB chunks
+            }
+            
+            async initiateFileTransfer(targetUserId, file) {
+                const transferId = this.generateTransferId();
+                const fileHash = await this.calculateMD5(file);
+                const totalChunks = Math.ceil(file.size / this.chunkSize);
+
+                // 存储传输信息
+                activeTransfers.set(transferId, {
+                    type: 'send',
+                    file: file,
+                    targetUserId: targetUserId,
+                    fileHash: fileHash,
+                    totalChunks: totalChunks,
+                    progress: 0,
+                    status: 'requesting'
+                });
+
+                // 发送传输请求
+                const transferRequest = {
+                    type: 'fileTransferRequest',
+                    transferId,
+                    targetUserId,
+                    metadata: {
+                        fileName: file.name,
+                        fileSize: file.size,
+                        fileType: file.type,
+                        fileHash,
+                        totalChunks,
+                        chunkSize: this.chunkSize
+                    }
+                };
+
+                this.websocket.send(JSON.stringify(transferRequest));
+                this.updateTransferStatus();
+                
+                displaySystemMessage(`正在请求向 ${getUserName(targetUserId)} 发送文件: ${file.name}`);
+                return transferId;
+            }
+            
+            handleTransferRequest(message) {
+                const { transferId, senderId, metadata } = message;
+                
+                // 显示接收请求
+                displayFileTransferRequest(senderId, transferId, metadata);
+            }
+            
+            acceptTransfer(transferId, senderId) {
+                // 发送接受响应
+                const response = {
+                    type: 'fileTransferResponse',
+                    transferId,
+                    senderId,
+                    accepted: true
+                };
+
+                this.websocket.send(JSON.stringify(response));
+                
+                // 创建接收会话
+                activeTransfers.set(transferId, {
+                    type: 'receive',
+                    senderId: senderId,
+                    receivedChunks: new Map(),
+                    progress: 0,
+                    status: 'receiving'
+                });
+                
+                this.updateTransferStatus();
+                displaySystemMessage(`已接受来自 ${getUserName(senderId)} 的文件传输`);
+            }
+            
+            rejectTransfer(transferId, senderId) {
+                const response = {
+                    type: 'fileTransferResponse',
+                    transferId,
+                    senderId,
+                    accepted: false
+                };
+
+                this.websocket.send(JSON.stringify(response));
+                displaySystemMessage(`已拒绝来自 ${getUserName(senderId)} 的文件传输`);
+            }
+            
+            handleTransferResponse(message) {
+                const transfer = activeTransfers.get(message.transferId);
+                if (!transfer) return;
+
+                if (message.accepted) {
+                    transfer.status = 'sending';
+                    this.startFileSending(transfer, message.transferId);
+                    displaySystemMessage(`${getUserName(message.targetUserId)} 接受了文件传输`);
+                } else {
+                    activeTransfers.delete(message.transferId);
+                    displaySystemMessage(`${getUserName(message.targetUserId)} 拒绝了文件传输`);
+                }
+                
+                this.updateTransferStatus();
+            }
+            
+            async startFileSending(transfer, transferId) {
+                const file = transfer.file;
+                const reader = new FileReader();
+                let chunkIndex = 0;
+
+                const sendNextChunk = () => {
+                    if (chunkIndex >= transfer.totalChunks) {
+                        transfer.status = 'completed';
+                        transfer.progress = 100;
+                        this.updateTransferStatus();
+                        displaySystemMessage(`文件 "${file.name}" 发送完成`);
+                        setTimeout(() => activeTransfers.delete(transferId), 5000);
+                        return;
+                    }
+
+                    const start = chunkIndex * this.chunkSize;
+                    const end = Math.min(start + this.chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+
+                    reader.onload = (e) => {
+                        if (e.target?.result) {
+                            const chunkData = Array.from(new Uint8Array(e.target.result));
+                            
+                            const chunkMessage = {
+                                type: 'realtimeFileChunk',
+                                transferId: transferId,
+                                targetUserId: transfer.targetUserId,
+                                chunkIndex,
+                                chunkData,
+                                isLast: chunkIndex === transfer.totalChunks - 1
+                            };
+
+                            this.websocket.send(JSON.stringify(chunkMessage));
+                            
+                            chunkIndex++;
+                            transfer.progress = (chunkIndex / transfer.totalChunks) * 100;
+                            this.updateTransferStatus();
+                            
+                            setTimeout(sendNextChunk, 50);
+                        }
+                    };
+
+                    reader.readAsArrayBuffer(chunk);
+                };
+
+                sendNextChunk();
+            }
+            
+            handleFileChunk(message) {
+                const transfer = activeTransfers.get(message.transferId);
+                if (!transfer || transfer.type !== 'receive') return;
+
+                const { chunkIndex, chunkData, isLast } = message;
+                
+                // 存储分片
+                transfer.receivedChunks.set(chunkIndex, chunkData);
+                transfer.progress = (transfer.receivedChunks.size / transfer.metadata.totalChunks) * 100;
+                
+                this.updateTransferStatus();
+
+                // 检查是否接收完成
+                if (transfer.receivedChunks.size === transfer.metadata.totalChunks) {
+                    this.assembleReceivedFile(transfer, message.transferId);
+                }
+            }
+            
+            async assembleReceivedFile(transfer, transferId) {
+                try {
+                    const chunks = [];
+                    
+                    // 按顺序组装分片
+                    for (let i = 0; i < transfer.metadata.totalChunks; i++) {
+                        const chunkData = transfer.receivedChunks.get(i);
+                        if (!chunkData) {
+                            throw new Error(`Missing chunk ${i}`);
+                        }
+                        chunks.push(new Uint8Array(chunkData));
+                    }
+
+                    // 合并所有分片
+                    const totalSize = chunks.reduce((size, chunk) => size + chunk.length, 0);
+                    const fileData = new Uint8Array(totalSize);
+                    let offset = 0;
+
+                    for (const chunk of chunks) {
+                        fileData.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+
+                    // 验证文件完整性
+                    const receivedHash = await this.calculateMD5FromBuffer(fileData.buffer);
+                    if (receivedHash !== transfer.metadata.fileHash) {
+                        throw new Error('File integrity check failed');
+                    }
+
+                    // 创建文件对象
+                    const blob = new Blob([fileData], { type: transfer.metadata.fileType });
+                    const file = new File([blob], transfer.metadata.fileName, { 
+                        type: transfer.metadata.fileType 
+                    });
+
+                    // 自动下载文件
+                    this.downloadFile(file);
+                    
+                    transfer.status = 'completed';
+                    transfer.progress = 100;
+                    this.updateTransferStatus();
+                    
+                    displaySystemMessage(`文件 "${file.name}" 接收完成并已下载`);
+                    displayFileMessage(transfer.senderId, file, 'received', transfer.metadata.fileHash);
+                    
+                    setTimeout(() => activeTransfers.delete(transferId), 5000);
+                    
+                } catch (error) {
+                    console.error('File assembly failed:', error);
+                    transfer.status = 'failed';
+                    this.updateTransferStatus();
+                    displaySystemMessage(`文件接收失败: ${error.message}`);
+                }
+            }
+            
+            downloadFile(file) {
+                const url = URL.createObjectURL(file);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+            
+            cancelTransfer(transferId) {
+                const transfer = activeTransfers.get(transferId);
+                if (!transfer) return;
+
+                const cancelMessage = {
+                    type: 'fileTransferCancel',
+                    transferId,
+                    targetUserId: transfer.targetUserId || transfer.senderId
+                };
+
+                this.websocket.send(JSON.stringify(cancelMessage));
+                activeTransfers.delete(transferId);
+                this.updateTransferStatus();
+                
+                displaySystemMessage('文件传输已取消');
+            }
+            
+            handleTransferCancel(message) {
+                const transfer = activeTransfers.get(message.transferId);
+                if (transfer) {
+                    activeTransfers.delete(message.transferId);
+                    this.updateTransferStatus();
+                    displaySystemMessage(`${getUserName(message.senderId)} 取消了文件传输`);
+                }
+            }
+            
+            updateTransferStatus() {
+                if (activeTransfers.size === 0) {
+                    transferStatusEl.classList.remove('show');
+                    return;
+                }
+                
+                transferStatusEl.classList.add('show');
+                transferListEl.innerHTML = '';
+                
+                activeTransfers.forEach((transfer, transferId) => {
+                    const transferEl = document.createElement('div');
+                    transferEl.className = 'transfer-item';
+                    
+                    const fileName = transfer.file ? transfer.file.name : transfer.metadata?.fileName || 'Unknown';
+                    const peerName = getUserName(transfer.targetUserId || transfer.senderId);
+                    const statusText = this.getStatusText(transfer.status);
+                    
+                    transferEl.innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-weight: bold;">${fileName}</div>
+                                <div style="font-size: 0.8em; color: #ccc;">
+                                    ${transfer.type === 'send' ? '发送给' : '接收自'} ${peerName} - ${statusText}
+                                </div>
+                            </div>
+                            ${transfer.status === 'requesting' || transfer.status === 'sending' || transfer.status === 'receiving' ? 
+                                `<button onclick="fileTransferManager.cancelTransfer('${transferId}')" class="cancel-btn">取消</button>` : ''}
+                        </div>
+                        <div class="file-progress" style="margin-top: 5px;">
+                            <div class="file-progress-bar" style="width: ${transfer.progress}%"></div>
+                        </div>
+                    `;
+                    
+                    transferListEl.appendChild(transferEl);
+                });
+            }
+            
+            getStatusText(status) {
+                const statusMap = {
+                    'requesting': '请求中',
+                    'sending': '发送中',
+                    'receiving': '接收中',
+                    'completed': '已完成',
+                    'failed': '失败'
+                };
+                return statusMap[status] || status;
+            }
+            
+            async calculateMD5(file) {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        if (e.target?.result) {
+                            const hash = await this.calculateMD5FromBuffer(e.target.result);
+                            resolve(hash);
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                });
+            }
+            
+            async calculateMD5FromBuffer(buffer) {
+                const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            }
+            
+            generateTransferId() {
+                return Date.now().toString(36) + Math.random().toString(36).substr(2);
+            }
+        }
+        
+        // 初始化
+        async function init() {
+            roomId = getRoomIdFromUrl();
+            
+            // 从本地存储加载密钥
+            loadKeysFromStorage();
+            
+            // 连接 WebSocket
+            connectWebSocket();
+            
+            // 绑定事件
+            bindEvents();
+        }
+        
+        function bindEvents() {
+            sendButtonEl.addEventListener('click', sendMessage);
+            messageInputEl.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+            
+            generateKeysBtn.addEventListener('click', generateKeys);
+            importPublicKeyBtn.addEventListener('click', importPublicKey);
+            importPrivateKeyBtn.addEventListener('click', importPrivateKey);
+            copyPublicKeyBtn.addEventListener('click', copyPublicKey);
+            
+            fileBtnEl.addEventListener('click', () => fileInputEl.click());
+            fileInputEl.addEventListener('change', handleFileSelect);
+        }
+        
+        function getRoomIdFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('room') || generateRoomId();
+        }
+        
+        function generateRoomId() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < 64; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        }
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/api/room/${roomId}/websocket`;
+            
+            websocket = new WebSocket(wsUrl);
+            
+            websocket.onopen = () => {
+                connectionStatusEl.textContent = '已连接';
+                connectionStatusEl.className = 'connection-status status-connected';
+                
+                // 初始化文件传输管理器
+                fileTransferManager = new FileTransferManager(websocket);
+                
+                if (publicKey) {
+                    registerUser();
+                }
+            };
+            
+            websocket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            };
+            
+            websocket.onclose = () => {
+                connectionStatusEl.textContent = '连接断开';
+                connectionStatusEl.className = 'connection-status status-disconnected';
+                
+                // 尝试重连
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                showNotification('连接错误', 'error');
+            };
+        }
+        
+        function handleWebSocketMessage(message) {
+            switch (message.type) {
+                case 'registered':
+                    handleRegistered(message);
+                    break;
+                case 'userList':
+                    handleUserList(message);
+                    break;
+                case 'encryptedMessage':
+                    handleEncryptedMessage(message);
+                    break;
+                case 'fileTransferRequestNotification':
+                    fileTransferManager.handleTransferRequest(message);
+                    break;
+                case 'fileTransferResponseNotification':
+                    fileTransferManager.handleTransferResponse(message);
+                    break;
+                case 'realtimeFileChunkNotification':
+                    fileTransferManager.handleFileChunk(message);
+                    break;
+                case 'fileTransferCancelNotification':
+                    fileTransferManager.handleTransferCancel(message);
+                    break;
+                case 'error':
+                    showNotification(message.message, 'error');
+                    break;
+            }
+        }
+        
+        function handleRegistered(message) {
+            userId = message.profile.id;
+            userName = message.profile.name;
+            userEmail = message.profile.email;
+            
+            messageInputEl.disabled = false;
+            sendButtonEl.disabled = false;
+            
+            showNotification('注册成功');
+            
+            // 请求用户列表
+            websocket.send(JSON.stringify({ type: 'getUsers' }));
+        }
+        
+        function handleUserList(message) {
+            users.clear();
+            message.users.forEach(user => {
+                users.set(user.id, user);
+            });
+            updateUserList();
+        }
+        
+        function updateUserList() {
+            userListEl.innerHTML = '';
+            
+            users.forEach((user, id) => {
+                const userEl = document.createElement('div');
+                userEl.className = `user-item ${id === userId ? 'self' : ''}`;
+                
+                userEl.innerHTML = `
+                    <div class="user-name">${user.name}</div>
+                    <div class="user-id">${user.id}</div>
+                    ${id !== userId ? `
+                        <button class="file-transfer-btn" onclick="selectFileForUser('${id}')">
+                            发送文件
+                        </button>
+                    ` : ''}
+                `;
+                
+                userListEl.appendChild(userEl);
+            });
+        }
+        
+        function selectFileForUser(peerId) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.multiple = true;
+            input.onchange = (e) => {
+                const files = Array.from(e.target.files);
+                files.forEach(file => sendFileToUser(peerId, file));
+            };
+            input.click();
+        }
+        
+        async function sendFileToUser(peerId, file) {
+            if (!fileTransferManager) {
+                showNotification('文件传输管理器未初始化', 'error');
+                return;
+            }
+            
+            try {
+                await fileTransferManager.initiateFileTransfer(peerId, file);
+            } catch (error) {
+                console.error('Failed to send file:', error);
+                showNotification(`文件发送失败: ${error.message}`, 'error');
+            }
+        }
+        
+        function handleFileSelect(event) {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+            
+            // 如果只有一个在线用户（除了自己），直接发送
+            const otherUsers = Array.from(users.keys()).filter(id => id !== userId);
+            if (otherUsers.length === 1) {
+                files.forEach(file => sendFileToUser(otherUsers[0], file));
+            } else if (otherUsers.length > 1) {
+                // 让用户选择发送给谁
+                const userNames = otherUsers.map(id => `${id}: ${getUserName(id)}`).join('\n');
+                const selectedUserId = prompt(`选择发送给哪个用户:\n${userNames}\n\n请输入用户ID:`);
+                if (selectedUserId && users.has(selectedUserId)) {
+                    files.forEach(file => sendFileToUser(selectedUserId, file));
+                }
+            } else {
+                showNotification('没有其他在线用户', 'warning');
+            }
+            
+            // 清空文件输入
+            event.target.value = '';
+        }
+        
+        function displayFileTransferRequest(senderId, transferId, metadata) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message system';
+            
+            messageEl.innerHTML = `
+                <div style="margin-bottom: 10px;">
+                    <strong>${getUserName(senderId)}</strong> 想要发送文件:
+                </div>
+                <div class="file-message">
+                    <div class="file-icon">📄</div>
+                    <div class="file-info">
+                        <div class="file-name">${metadata.fileName}</div>
+                        <div class="file-size">${formatFileSize(metadata.fileSize)}</div>
+                        <div class="file-hash">MD5: ${metadata.fileHash.substring(0, 16)}...</div>
+                    </div>
+                    <div>
+                        <button class="download-btn" onclick="fileTransferManager.acceptTransfer('${transferId}', '${senderId}')">
+                            接受
+                        </button>
+                        <button class="cancel-btn" onclick="fileTransferManager.rejectTransfer('${transferId}', '${senderId}')">
+                            拒绝
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function displayFileMessage(senderId, file, type, fileHash) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type} file`;
+            
+            const senderName = getUserName(senderId);
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${new Date().toLocaleTimeString()}</span>
+                </div>
+                <div class="file-message">
+                    <div class="file-icon">📄</div>
+                    <div class="file-info">
+                        <div class="file-name">${file.name}</div>
+                        <div class="file-size">${formatFileSize(file.size)}</div>
+                        ${fileHash ? `<div class="file-hash">MD5: ${fileHash.substring(0, 16)}...</div>` : ''}
+                    </div>
+                    ${type === 'received' ? '<div style="color: var(--success);">✓ 已下载</div>' : ''}
+                </div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function displaySystemMessage(text) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message system';
+            messageEl.innerHTML = `
+                <div>${text}</div>
+                <div class="message-time">${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function getUserName(userId) {
+            const user = users.get(userId);
+            return user ? user.name : userId;
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        // 其他必要的函数（密钥管理、消息发送等）
+        function loadKeysFromStorage() {
+            privateKey = localStorage.getItem('privateKey') || '';
+            publicKey = localStorage.getItem('publicKey') || '';
+            
+            if (publicKey) {
+                extractUserProfile(publicKey).then(profile => {
+                    userId = profile.id;
+                    userName = profile.name;
+                    userEmail = profile.email;
+                    keyIdEl.textContent = userId;
+                    
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        registerUser();
+                    }
+                });
+            }
+        }
+        
+        function registerUser() {
+            if (!publicKey) return;
+            
+            const registerMessage = {
+                type: 'register',
+                publicKey: publicKey
+            };
+            
+            websocket.send(JSON.stringify(registerMessage));
+        }
+        
+        async function generateKeys() {
+            try {
+                const name = prompt('请输入您的姓名:') || 'Anonymous';
+                const email = prompt('请输入您的邮箱:') || 'anonymous@example.com';
+                
+                const { privateKey: privKey, publicKey: pubKey } = await openpgp.generateKey({
+                    type: 'ecc',
+                    curve: 'curve25519',
+                    userIDs: [{ name: name, email: email }],
+                    passphrase: '',
+                    format: 'armored'
+                });
+                
+                privateKey = privKey;
+                publicKey = pubKey;
+                
+                localStorage.setItem('privateKey', privateKey);
+                localStorage.setItem('publicKey', publicKey);
+                
+                const profile = await extractUserProfile(publicKey);
+                userId = profile.id;
+                userName = profile.name;
+                userEmail = profile.email;
+                keyIdEl.textContent = userId;
+                
+                showNotification('密钥生成成功');
+                
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    registerUser();
+                }
+            } catch (error) {
+                showNotification('密钥生成失败: ' + error.message, 'error');
+            }
+        }
+        
+        async function extractUserProfile(publicKeyArmored) {
+            try {
+                const publicKeyObj = await openpgp.readKey({ armoredKey: publicKeyArmored });
+                const primaryUser = await publicKeyObj.getPrimaryUser();
+                const userID = primaryUser.user.userID;
+                
+                let name = '';
+                let email = '';
+                let id = '';
+                
+                if (userID) {
+                    const userIdString = userID.userID || '';
+                    const match = userIdString.match(/^(.+?)\s*<([^>]+)>$/);
+                    
+                    if (match) {
+                        name = match[1].trim();
+                        email = match[2].trim();
+                    } else {
+                        if (userIdString.includes('@')) {
+                            email = userIdString.trim();
+                            name = email.split('@')[0];
+                        } else {
+                            name = userIdString.trim();
+                        }
+                    }
+                }
+                
+                id = publicKeyObj.getFingerprint().toUpperCase();
+                
+                if (!name) {
+                    name = `User_${Math.random().toString(36).substr(2, 8)}`;
+                }
+                if (!email) {
+                    email = `${name.toLowerCase().replace(/\s+/g, '')}@example.com`;
+                }
+                
+                return { id, name, email };
+                
+            } catch (error) {
+                console.error('解析公钥时出错:', error);
+                return {
+                    id: Math.random().toString(36).substr(2, 8),
+                    name: 'Unknown User',
+                    email: 'unknown@example.com'
+                };
+            }
+        }
+        
+        function importPublicKey() {
+            const key = prompt('请粘贴公钥:');
+            if (key && key.includes('-----BEGIN PGP PUBLIC KEY BLOCK-----')) {
+                publicKey = key;
+                localStorage.setItem('publicKey', publicKey);
+                
+                extractUserProfile(publicKey).then(profile => {
+                    userId = profile.id;
+                    userName = profile.name;
+                    userEmail = profile.email;
+                    keyIdEl.textContent = userId;
+                    
+                    showNotification('公钥导入成功');
+                    
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        registerUser();
+                    }
+                });
+            } else {
+                showNotification('无效的公钥格式', 'error');
+            }
+        }
+        
+        function importPrivateKey() {
+            const key = prompt('请粘贴私钥:');
+            if (key && key.includes('-----BEGIN PGP PRIVATE KEY BLOCK-----')) {
+                privateKey = key;
+                localStorage.setItem('privateKey', privateKey);
+                showNotification('私钥导入成功');
+            } else {
+                showNotification('无效的私钥格式', 'error');
+            }
+        }
+        
+        function copyPublicKey() {
+            if (publicKey) {
+                navigator.clipboard.writeText(publicKey).then(() => {
+                    showNotification('公钥已复制到剪贴板');
+                });
+            } else {
+                showNotification('没有可复制的公钥', 'warning');
+            }
+        }
+        
+        async function sendMessage() {
+            const text = messageInputEl.value.trim();
+            if (!text || !publicKey) return;
+            
+            try {
+                const encryptedData = await encryptForAllUsers(text);
+                
+                const message = {
+                    type: 'message',
+                    encryptedData: encryptedData
+                };
+                
+                websocket.send(JSON.stringify(message));
+                messageInputEl.value = '';
+                
+            } catch (error) {
+                showNotification('消息发送失败: ' + error.message, 'error');
+            }
+        }
+        
+        async function encryptForAllUsers(text) {
+            const publicKeys = Array.from(users.values()).map(user => user.publicKey);
+            
+            if (publicKeys.length === 0) {
+                throw new Error('没有可用的公钥');
+            }
+            
+            const keys = await Promise.all(
+                publicKeys.map(key => openpgp.readKey({ armoredKey: key }))
+            );
+            
+            const message = await openpgp.createMessage({ text: text });
+            const encrypted = await openpgp.encrypt({
+                message: message,
+                encryptionKeys: keys,
+                format: 'armored'
+            });
+            
+            return encrypted;
+        }
+        
+        async function handleEncryptedMessage(message) {
+            if (!privateKey) {
+                displayEncryptedMessage(message);
+                return;
+            }
+            
+            try {
+                const encryptedMessage = await openpgp.readMessage({
+                    armoredMessage: message.encryptedData
+                });
+                
+                const privKey = await openpgp.readPrivateKey({
+                    armoredKey: privateKey
+                });
+                
+                const { data: decrypted } = await openpgp.decrypt({
+                    message: encryptedMessage,
+                    decryptionKeys: privKey
+                });
+                
+                displayMessage(message.senderId, decrypted, message.timestamp);
+                
+            } catch (error) {
+                console.error('解密失败:', error);
+                displayEncryptedMessage(message);
+            }
+        }
+        
+        function displayMessage(senderId, text, timestamp) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${senderId === userId ? 'sent' : 'received'}`;
+            
+            const senderName = getUserName(senderId);
+            const time = new Date(timestamp).toLocaleTimeString();
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="message-text">${text}</div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function displayEncryptedMessage(message) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message received encrypted';
+            
+            const senderName = getUserName(message.senderId);
+            const time = new Date(message.timestamp).toLocaleTimeString();
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="message-text">🔒 加密消息 (需要私钥解密)</div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function showNotification(message, type = 'success') {
+            notificationEl.textContent = message;
+            notificationEl.className = `notification ${type}`;
+            notificationEl.classList.add('show');
+            
+            setTimeout(() => {
+                notificationEl.classList.remove('show');
+            }, 3000);
+        }
+        
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', init);
+        
+        // 页面卸载时清理
+        window.addEventListener('beforeunload', () => {
+            if (fileTransferManager) {
+                // 取消所有活跃的传输
+                activeTransfers.forEach((transfer, transferId) => {
+                    if (transfer.status === 'sending' || transfer.status === 'receiving') {
+                        fileTransferManager.cancelTransfer(transferId);
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>

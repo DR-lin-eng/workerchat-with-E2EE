@@ -227,3 +227,102 @@ export enum VoiceRecordingState {
     PROCESSING = 'processing',
     SENDING = 'sending'
 }
+
+// WebRTC 信令消息
+export interface WebRTCSignalingMessage {
+    type: 'webrtc-signaling';
+    targetId: string;
+    data: {
+        type: 'offer' | 'answer' | 'ice-candidate' | 'file-transfer-request' | 'file-transfer-response';
+        offer?: RTCSessionDescriptionInit;
+        answer?: RTCSessionDescriptionInit;
+        candidate?: RTCIceCandidate;
+        fileInfo?: {
+            name: string;
+            size: number;
+            type: string;
+        };
+        accepted?: boolean;
+    };
+}
+
+// WebRTC 信令通知
+export interface WebRTCSignalingNotification {
+    type: 'webrtc-signaling-notification';
+    senderId: string;
+    data: any;
+}
+
+// WebSocket 文件传输消息类型
+export interface FileTransferRequest {
+    type: 'fileTransferRequest';
+    transferId: string;
+    targetUserId: string;
+    metadata: {
+        fileName: string;
+        fileSize: number;
+        fileType: string;
+        fileHash: string;
+        totalChunks: number;
+        chunkSize: number;
+    };
+}
+
+export interface FileTransferResponse {
+    type: 'fileTransferResponse';
+    transferId: string;
+    senderId: string;
+    accepted: boolean;
+}
+
+export interface FileTransferChunk {
+    type: 'realtimeFileChunk';
+    transferId: string;
+    targetUserId: string;
+    chunkIndex: number;
+    chunkData: number[];
+    isLast: boolean;
+}
+
+export interface FileTransferCancel {
+    type: 'fileTransferCancel';
+    transferId: string;
+    targetUserId: string;
+}
+
+// 文件传输通知消息
+export interface FileTransferRequestNotification {
+    type: 'fileTransferRequestNotification';
+    transferId: string;
+    senderId: string;
+    metadata: {
+        fileName: string;
+        fileSize: number;
+        fileType: string;
+        fileHash: string;
+        totalChunks: number;
+        chunkSize: number;
+    };
+}
+
+export interface FileTransferResponseNotification {
+    type: 'fileTransferResponseNotification';
+    transferId: string;
+    targetUserId: string;
+    accepted: boolean;
+}
+
+export interface FileChunkNotification {
+    type: 'realtimeFileChunkNotification';
+    transferId: string;
+    senderId: string;
+    chunkIndex: number;
+    chunkData: number[];
+    isLast: boolean;
+}
+
+export interface FileTransferCancelNotification {
+    type: 'fileTransferCancelNotification';
+    transferId: string;
+    senderId: string;
+}

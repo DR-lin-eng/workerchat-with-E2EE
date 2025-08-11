@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P 文件传输聊天室</title>
+    <script src="https://unpkg.com/openpgp@6.2.0/dist/openpgp.min.js"></script>
+    <style>
+        :root {
+            --primary: #4a6fa5;
+            --secondary: #6b8cbc;
+            --light: #f0f4f8;
+            --dark: #2c3e50;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #1a2a6c, #b21f1f, #1a2a6c);
+            color: var(--light);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+            height: calc(100vh - 40px);
+        }
+        
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            padding-bottom: 15px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        h1, h2, h3 {
+            color: white;
+            margin-bottom: 15px;
+        }
+        
+        .connection-status {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .status-connected { background: var(--success); }
+        .status-connecting { background: var(--warning); }
+        .status-disconnected { background: var(--danger); }
+        
+        .user-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .user-item {
+            padding: 9px;
+            margin-bottom: 10px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .user-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: translateX(5px);
+        }
+        
+        .user-item.self {
+            background: rgba(74, 111, 165, 0.3);
+        }
+        
+        .user-name {
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+        
+        .user-id {
+            font-size: 0.75em;
+            color: #bbb;
+            word-break: break-all;
+            font-family: monospace;
+        }
+        
+        .p2p-status {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+        
+        .p2p-status.connected {
+            background: var(--success);
+        }
+        
+        .p2p-status.connecting {
+            background: var(--warning);
+        }
+        
+        .file-transfer-btn {
+            margin-top: 5px;
+            padding: 4px 8px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+        
+        .file-transfer-btn:hover {
+            background: var(--secondary);
+        }
+        
+        .file-transfer-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .chat-area {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        
+        .message {
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 10px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        
+        .message.sent {
+            background: var(--primary);
+            align-self: flex-end;
+            margin-left: 20%;
+        }
+        
+        .message.received {
+            background: var(--dark);
+            align-self: flex-start;
+            margin-right: 20%;
+        }
+        
+        .message.file {
+            background: rgba(106, 90, 205, 0.3);
+            border: 1px solid #6a5acd;
+        }
+        
+        .sender-info {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85em;
+        }
+        
+        .sender-name {
+            color: #4ec9b0;
+        }
+        
+        .message-time {
+            font-size: 0.75em;
+            opacity: 0.7;
+        }
+        
+        .file-message {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .file-icon {
+            font-size: 2em;
+        }
+        
+        .file-info {
+            flex: 1;
+        }
+        
+        .file-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .file-size {
+            font-size: 0.8em;
+            color: #ccc;
+        }
+        
+        .file-progress {
+            margin-top: 5px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .file-progress-bar {
+            height: 100%;
+            background: var(--success);
+            transition: width 0.3s ease;
+        }
+        
+        .download-btn {
+            padding: 5px 10px;
+            background: var(--success);
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+        
+        .input-area {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        
+        .input-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .input-tools {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        
+        .tool-btn {
+            padding: 8px 10px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .tool-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        textarea {
+            flex: 1;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            resize: none;
+            min-height: 60px;
+        }
+        
+        .send-button {
+            padding: 12px 20px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+            height: fit-content;
+        }
+        
+        .send-button:hover {
+            background: var(--secondary);
+        }
+        
+        .send-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            border-radius: 8px;
+            background: var(--success);
+            color: white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            transform: translateX(120%);
+            transition: transform 0.3s ease;
+            max-width: 300px;
+        }
+        
+        .notification.show {
+            transform: translateX(0);
+        }
+        
+        .notification.error {
+            background: var(--danger);
+        }
+        
+        .notification.warning {
+            background: var(--warning);
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .key-management {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .key-info {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+        
+        .key-id {
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 0.8em;
+            color: #4ec9b0;
+        }
+        
+        .key-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        
+        .key-buttons button {
+            padding: 8px 12px;
+            font-size: 0.85em;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .key-buttons button:hover {
+            background: var(--secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel manage-area">
+            <div class="header">
+                <h2>在线用户</h2>
+                <div id="connectionStatus" class="connection-status status-disconnected">
+                    未连接
+                </div>
+            </div>
+            <div class="user-list" id="userList">
+                <div style="text-align: center; color: #999; padding: 20px;">
+                    等待连接...
+                </div>
+            </div>
+            <div class="key-management">
+                <h3>密钥管理</h3>
+                <div class="key-info">
+                    <div>你的密钥ID:</div>
+                    <div id="keyId" class="key-id">未注册</div>
+                </div>
+                <div class="key-buttons">
+                    <button id="importPublicKey">导入公钥</button>
+                    <button id="importPrivateKey">导入私钥</button>
+                    <button id="copyPublicKey">复制公钥</button>
+                    <button id="generateKeys">生成密钥</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel chat-area">
+            <div class="header">
+                <h2 id="roomName">P2P 文件传输聊天室</h2>
+            </div>
+            
+            <div class="messages" id="messages"></div>
+            
+            <div class="input-area">
+                <div class="input-container">
+                    <div class="input-tools">
+                        <button class="tool-btn" id="fileBtn" title="发送文件">
+                            📎 文件
+                        </button>
+                    </div>
+                    <textarea id="messageInput" placeholder="输入消息..." disabled></textarea>
+                </div>
+                <button class="send-button" id="sendButton" disabled>发送</button>
+            </div>
+            
+            <input type="file" id="fileInput" multiple>
+        </div>
+    </div>
+    
+    <div class="notification" id="notification"></div>
+
+    <script>
+        // 全局变量
+        let privateKey = '';
+        let publicKey = '';
+        let userId = '';
+        let userName = '';
+        let userEmail = '';
+        let websocket = null;
+        let roomId = '';
+        let users = new Map();
+        let webrtcManager = null;
+        let p2pConnections = new Map(); // userId -> connection status
+        
+        // DOM元素
+        const userListEl = document.getElementById('userList');
+        const messagesEl = document.getElementById('messages');
+        const messageInputEl = document.getElementById('messageInput');
+        const sendButtonEl = document.getElementById('sendButton');
+        const generateKeysBtn = document.getElementById('generateKeys');
+        const importPublicKeyBtn = document.getElementById('importPublicKey');
+        const importPrivateKeyBtn = document.getElementById('importPrivateKey');
+        const copyPublicKeyBtn = document.getElementById('copyPublicKey');
+        const keyIdEl = document.getElementById('keyId');
+        const notificationEl = document.getElementById('notification');
+        const connectionStatusEl = document.getElementById('connectionStatus');
+        const fileInputEl = document.getElementById('fileInput');
+        const fileBtnEl = document.getElementById('fileBtn');
+        
+        // WebRTC 管理器类
+        class WebRTCManager {
+            constructor() {
+                this.peerConnections = new Map();
+                this.dataChannels = new Map();
+                this.pendingOffers = new Map();
+                this.pendingAnswers = new Map();
+                this.iceCandidates = new Map();
+                
+                this.rtcConfiguration = {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                };
+            }
+            
+            async createConnection(peerId) {
+                if (this.peerConnections.has(peerId)) {
+                    return;
+                }
+
+                const peerConnection = new RTCPeerConnection(this.rtcConfiguration);
+                this.peerConnections.set(peerId, peerConnection);
+
+                const dataChannel = peerConnection.createDataChannel('fileTransfer', {
+                    ordered: true
+                });
+                
+                this.setupDataChannel(dataChannel, peerId);
+                this.dataChannels.set(peerId, dataChannel);
+
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        this.sendSignalingMessage(peerId, {
+                            type: 'ice-candidate',
+                            candidate: event.candidate
+                        });
+                    }
+                };
+
+                peerConnection.onconnectionstatechange = () => {
+                    this.updateConnectionStatus(peerId, peerConnection.connectionState);
+                };
+
+                peerConnection.ondatachannel = (event) => {
+                    const channel = event.channel;
+                    this.setupDataChannel(channel, peerId);
+                    this.dataChannels.set(peerId, channel);
+                };
+            }
+            
+            async initiateFileTransfer(peerId, file) {
+                await this.createConnection(peerId);
+                
+                const peerConnection = this.peerConnections.get(peerId);
+                if (!peerConnection) {
+                    throw new Error('Failed to create peer connection');
+                }
+
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                this.sendSignalingMessage(peerId, {
+                    type: 'offer',
+                    offer: offer,
+                    fileInfo: {
+                        name: file.name,
+                        size: file.size,
+                        type: file.type
+                    }
+                });
+            }
+            
+            async handleSignalingMessage(senderId, message) {
+                switch (message.type) {
+                    case 'offer':
+                        await this.handleOffer(senderId, message);
+                        break;
+                    case 'answer':
+                        await this.handleAnswer(senderId, message);
+                        break;
+                    case 'ice-candidate':
+                        await this.handleIceCandidate(senderId, message);
+                        break;
+                }
+            }
+            
+            async handleOffer(senderId, message) {
+                // 询问用户是否接受文件传输
+                const accept = confirm(`${getUserName(senderId)} 想要发送文件: ${message.fileInfo.name} (${formatFileSize(message.fileInfo.size)})\n\n是否接受?`);
+                
+                if (!accept) {
+                    return;
+                }
+                
+                await this.createConnection(senderId);
+                
+                const peerConnection = this.peerConnections.get(senderId);
+                if (!peerConnection) return;
+
+                await peerConnection.setRemoteDescription(message.offer);
+                
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                this.sendSignalingMessage(senderId, {
+                    type: 'answer',
+                    answer: answer
+                });
+
+                const candidates = this.iceCandidates.get(senderId) || [];
+                for (const candidate of candidates) {
+                    await peerConnection.addIceCandidate(candidate);
+                }
+                this.iceCandidates.delete(senderId);
+            }
+            
+            async handleAnswer(senderId, message) {
+                const peerConnection = this.peerConnections.get(senderId);
+                if (!peerConnection) return;
+
+                await peerConnection.setRemoteDescription(message.answer);
+
+                const candidates = this.iceCandidates.get(senderId) || [];
+                for (const candidate of candidates) {
+                    await peerConnection.addIceCandidate(candidate);
+                }
+                this.iceCandidates.delete(senderId);
+            }
+            
+            async handleIceCandidate(senderId, message) {
+                const peerConnection = this.peerConnections.get(senderId);
+                
+                if (peerConnection && peerConnection.remoteDescription) {
+                    await peerConnection.addIceCandidate(message.candidate);
+                } else {
+                    if (!this.iceCandidates.has(senderId)) {
+                        this.iceCandidates.set(senderId, []);
+                    }
+                    this.iceCandidates.get(senderId).push(message.candidate);
+                }
+            }
+            
+            setupDataChannel(dataChannel, peerId) {
+                dataChannel.binaryType = 'arraybuffer';
+                
+                let receivedData = [];
+                let expectedSize = 0;
+                let receivedSize = 0;
+                let fileName = '';
+
+                dataChannel.onopen = () => {
+                    console.log(`Data channel opened with ${peerId}`);
+                    this.updateConnectionStatus(peerId, 'connected');
+                };
+
+                dataChannel.onmessage = (event) => {
+                    if (typeof event.data === 'string') {
+                        const metadata = JSON.parse(event.data);
+                        expectedSize = metadata.size;
+                        fileName = metadata.name;
+                        receivedData = [];
+                        receivedSize = 0;
+                        
+                        // 显示接收进度
+                        this.displayFileReceiving(peerId, metadata);
+                    } else {
+                        receivedData.push(event.data);
+                        receivedSize += event.data.byteLength;
+                        
+                        const progress = (receivedSize / expectedSize) * 100;
+                        this.updateFileReceivingProgress(peerId, progress);
+
+                        if (receivedSize >= expectedSize) {
+                            const blob = new Blob(receivedData);
+                            const file = new File([blob], fileName);
+                            this.onFileReceived(peerId, file);
+                        }
+                    }
+                };
+
+                dataChannel.onerror = (error) => {
+                    console.error(`Data channel error with ${peerId}:`, error);
+                };
+
+                dataChannel.onclose = () => {
+                    console.log(`Data channel closed with ${peerId}`);
+                    this.updateConnectionStatus(peerId, 'disconnected');
+                };
+            }
+            
+            async sendFile(peerId, file) {
+                const dataChannel = this.dataChannels.get(peerId);
+                if (!dataChannel || dataChannel.readyState !== 'open') {
+                    throw new Error('Data channel not ready');
+                }
+
+                const metadata = {
+                    name: file.name,
+                    size: file.size,
+                    type: file.type
+                };
+                dataChannel.send(JSON.stringify(metadata));
+
+                const chunkSize = 16384;
+                const reader = new FileReader();
+                let offset = 0;
+
+                const sendNextChunk = () => {
+                    if (offset >= file.size) {
+                        showNotification(`文件 "${file.name}" 发送完成`);
+                        return;
+                    }
+
+                    const chunk = file.slice(offset, offset + chunkSize);
+                    reader.onload = (e) => {
+                        if (e.target?.result) {
+                            dataChannel.send(e.target.result);
+                            offset += chunkSize;
+                            
+                            const progress = (offset / file.size) * 100;
+                            this.updateFileSendingProgress(peerId, Math.min(progress, 100));
+                            
+                            setTimeout(sendNextChunk, 10);
+                        }
+                    };
+                    reader.readAsArrayBuffer(chunk);
+                };
+
+                // 显示发送进度
+                this.displayFileSending(peerId, file);
+                sendNextChunk();
+            }
+            
+            sendSignalingMessage(peerId, message) {
+                const signalingMessage = {
+                    type: 'webrtc-signaling',
+                    targetId: peerId,
+                    data: message
+                };
+                
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.send(JSON.stringify(signalingMessage));
+                }
+            }
+            
+            updateConnectionStatus(peerId, state) {
+                p2pConnections.set(peerId, state);
+                updateUserList();
+                
+                if (state === 'connected') {
+                    showNotification(`与 ${getUserName(peerId)} 建立了 P2P 连接`);
+                } else if (state === 'disconnected') {
+                    showNotification(`与 ${getUserName(peerId)} 的 P2P 连接已断开`);
+                }
+            }
+            
+            onFileReceived(senderId, file) {
+                showNotification(`收到来自 ${getUserName(senderId)} 的文件: ${file.name}`);
+                
+                // 创建下载链接
+                const url = URL.createObjectURL(file);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                // 在聊天中显示文件消息
+                displayFileMessage(senderId, file, 'received');
+            }
+            
+            displayFileSending(peerId, file) {
+                displayFileMessage(userId, file, 'sent', 0);
+            }
+            
+            displayFileReceiving(peerId, metadata) {
+                displayFileMessage(peerId, metadata, 'received', 0);
+            }
+            
+            updateFileSendingProgress(peerId, progress) {
+                // 更新发送进度显示
+                updateFileProgress(userId, progress);
+            }
+            
+            updateFileReceivingProgress(peerId, progress) {
+                // 更新接收进度显示
+                updateFileProgress(peerId, progress);
+            }
+            
+            closeConnection(peerId) {
+                const dataChannel = this.dataChannels.get(peerId);
+                if (dataChannel) {
+                    dataChannel.close();
+                    this.dataChannels.delete(peerId);
+                }
+
+                const peerConnection = this.peerConnections.get(peerId);
+                if (peerConnection) {
+                    peerConnection.close();
+                    this.peerConnections.delete(peerId);
+                }
+
+                this.iceCandidates.delete(peerId);
+                p2pConnections.delete(peerId);
+                updateUserList();
+            }
+            
+            cleanup() {
+                for (const peerId of this.peerConnections.keys()) {
+                    this.closeConnection(peerId);
+                }
+            }
+        }
+        
+        // 初始化
+        async function init() {
+            roomId = getRoomIdFromUrl();
+            
+            // 初始化 WebRTC 管理器
+            webrtcManager = new WebRTCManager();
+            
+            // 从本地存储加载密钥
+            loadKeysFromStorage();
+            
+            // 连接 WebSocket
+            connectWebSocket();
+            
+            // 绑定事件
+            bindEvents();
+        }
+        
+        function bindEvents() {
+            sendButtonEl.addEventListener('click', sendMessage);
+            messageInputEl.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+            
+            generateKeysBtn.addEventListener('click', generateKeys);
+            importPublicKeyBtn.addEventListener('click', importPublicKey);
+            importPrivateKeyBtn.addEventListener('click', importPrivateKey);
+            copyPublicKeyBtn.addEventListener('click', copyPublicKey);
+            
+            fileBtnEl.addEventListener('click', () => fileInputEl.click());
+            fileInputEl.addEventListener('change', handleFileSelect);
+        }
+        
+        function getRoomIdFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('room') || generateRoomId();
+        }
+        
+        function generateRoomId() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < 64; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        }
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/api/room/${roomId}/websocket`;
+            
+            websocket = new WebSocket(wsUrl);
+            window.chatWebSocket = websocket; // 供 WebRTC 管理器使用
+            
+            websocket.onopen = () => {
+                connectionStatusEl.textContent = '已连接';
+                connectionStatusEl.className = 'connection-status status-connected';
+                
+                if (publicKey) {
+                    registerUser();
+                }
+            };
+            
+            websocket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            };
+            
+            websocket.onclose = () => {
+                connectionStatusEl.textContent = '连接断开';
+                connectionStatusEl.className = 'connection-status status-disconnected';
+                
+                // 尝试重连
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                showNotification('连接错误', 'error');
+            };
+        }
+        
+        function handleWebSocketMessage(message) {
+            switch (message.type) {
+                case 'registered':
+                    handleRegistered(message);
+                    break;
+                case 'userList':
+                    handleUserList(message);
+                    break;
+                case 'encryptedMessage':
+                    handleEncryptedMessage(message);
+                    break;
+                case 'webrtc-signaling-notification':
+                    handleWebRTCSignaling(message);
+                    break;
+                case 'error':
+                    showNotification(message.message, 'error');
+                    break;
+            }
+        }
+        
+        function handleWebRTCSignaling(message) {
+            if (webrtcManager) {
+                webrtcManager.handleSignalingMessage(message.senderId, message.data);
+            }
+        }
+        
+        function handleRegistered(message) {
+            userId = message.profile.id;
+            userName = message.profile.name;
+            userEmail = message.profile.email;
+            
+            messageInputEl.disabled = false;
+            sendButtonEl.disabled = false;
+            
+            showNotification('注册成功');
+            
+            // 请求用户列表
+            websocket.send(JSON.stringify({ type: 'getUsers' }));
+        }
+        
+        function handleUserList(message) {
+            users.clear();
+            message.users.forEach(user => {
+                users.set(user.id, user);
+            });
+            updateUserList();
+        }
+        
+        function updateUserList() {
+            userListEl.innerHTML = '';
+            
+            users.forEach((user, id) => {
+                const userEl = document.createElement('div');
+                userEl.className = `user-item ${id === userId ? 'self' : ''}`;
+                
+                const p2pStatus = p2pConnections.get(id) || 'disconnected';
+                const statusClass = p2pStatus === 'connected' ? 'connected' : 
+                                  p2pStatus === 'connecting' ? 'connecting' : '';
+                
+                userEl.innerHTML = `
+                    <div class="p2p-status ${statusClass}"></div>
+                    <div class="user-name">${user.name}</div>
+                    <div class="user-id">${user.id}</div>
+                    ${id !== userId ? `
+                        <button class="file-transfer-btn" onclick="selectFileForUser('${id}')" 
+                                ${p2pStatus !== 'connected' ? 'disabled' : ''}>
+                            ${p2pStatus === 'connected' ? '发送文件' : '建立连接'}
+                        </button>
+                    ` : ''}
+                `;
+                
+                if (id !== userId) {
+                    userEl.addEventListener('click', () => {
+                        if (p2pStatus !== 'connected') {
+                            // 尝试建立 P2P 连接
+                            establishP2PConnection(id);
+                        }
+                    });
+                }
+                
+                userListEl.appendChild(userEl);
+            });
+        }
+        
+        async function establishP2PConnection(peerId) {
+            if (!webrtcManager) return;
+            
+            try {
+                p2pConnections.set(peerId, 'connecting');
+                updateUserList();
+                
+                await webrtcManager.createConnection(peerId);
+                showNotification(`正在与 ${getUserName(peerId)} 建立 P2P 连接...`);
+            } catch (error) {
+                console.error('Failed to establish P2P connection:', error);
+                showNotification('建立 P2P 连接失败', 'error');
+                p2pConnections.delete(peerId);
+                updateUserList();
+            }
+        }
+        
+        function selectFileForUser(peerId) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.multiple = true;
+            input.onchange = (e) => {
+                const files = Array.from(e.target.files);
+                files.forEach(file => sendFileToUser(peerId, file));
+            };
+            input.click();
+        }
+        
+        async function sendFileToUser(peerId, file) {
+            if (!webrtcManager) {
+                showNotification('WebRTC 未初始化', 'error');
+                return;
+            }
+            
+            try {
+                const connectionState = p2pConnections.get(peerId);
+                if (connectionState !== 'connected') {
+                    // 先建立连接，然后发送文件
+                    await webrtcManager.initiateFileTransfer(peerId, file);
+                } else {
+                    // 直接发送文件
+                    await webrtcManager.sendFile(peerId, file);
+                }
+            } catch (error) {
+                console.error('Failed to send file:', error);
+                showNotification(`文件发送失败: ${error.message}`, 'error');
+            }
+        }
+        
+        function handleFileSelect(event) {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+            
+            // 如果只有一个在线用户（除了自己），直接发送
+            const otherUsers = Array.from(users.keys()).filter(id => id !== userId);
+            if (otherUsers.length === 1) {
+                files.forEach(file => sendFileToUser(otherUsers[0], file));
+            } else if (otherUsers.length > 1) {
+                // 让用户选择发送给谁
+                const userNames = otherUsers.map(id => `${id}: ${getUserName(id)}`).join('\n');
+                const selectedUserId = prompt(`选择发送给哪个用户:\n${userNames}\n\n请输入用户ID:`);
+                if (selectedUserId && users.has(selectedUserId)) {
+                    files.forEach(file => sendFileToUser(selectedUserId, file));
+                }
+            } else {
+                showNotification('没有其他在线用户', 'warning');
+            }
+            
+            // 清空文件输入
+            event.target.value = '';
+        }
+        
+        function getUserName(userId) {
+            const user = users.get(userId);
+            return user ? user.name : userId;
+        }
+        
+        function displayFileMessage(senderId, file, type, progress = 100) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type} file`;
+            
+            const senderName = getUserName(senderId);
+            const fileSize = typeof file.size !== 'undefined' ? file.size : file.fileSize;
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${new Date().toLocaleTimeString()}</span>
+                </div>
+                <div class="file-message">
+                    <div class="file-icon">📄</div>
+                    <div class="file-info">
+                        <div class="file-name">${file.name || file.fileName}</div>
+                        <div class="file-size">${formatFileSize(fileSize)}</div>
+                        <div class="file-progress">
+                            <div class="file-progress-bar" style="width: ${progress}%"></div>
+                        </div>
+                    </div>
+                    ${type === 'received' && progress === 100 ? 
+                        '<button class="download-btn">已下载</button>' : ''}
+                </div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function updateFileProgress(senderId, progress) {
+            // 找到最后一个来自该发送者的文件消息并更新进度
+            const messages = messagesEl.querySelectorAll('.message.file');
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const message = messages[i];
+                const senderName = message.querySelector('.sender-name').textContent;
+                if (senderName === getUserName(senderId)) {
+                    const progressBar = message.querySelector('.file-progress-bar');
+                    if (progressBar) {
+                        progressBar.style.width = `${progress}%`;
+                    }
+                    break;
+                }
+            }
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        // 其他必要的函数（密钥管理、消息发送等）
+        function loadKeysFromStorage() {
+            privateKey = localStorage.getItem('privateKey') || '';
+            publicKey = localStorage.getItem('publicKey') || '';
+            
+            if (publicKey) {
+                extractUserProfile(publicKey).then(profile => {
+                    userId = profile.id;
+                    userName = profile.name;
+                    userEmail = profile.email;
+                    keyIdEl.textContent = userId;
+                    
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        registerUser();
+                    }
+                });
+            }
+        }
+        
+        function registerUser() {
+            if (!publicKey) return;
+            
+            const registerMessage = {
+                type: 'register',
+                publicKey: publicKey
+            };
+            
+            websocket.send(JSON.stringify(registerMessage));
+        }
+        
+        async function generateKeys() {
+            try {
+                const name = prompt('请输入您的姓名:') || 'Anonymous';
+                const email = prompt('请输入您的邮箱:') || 'anonymous@example.com';
+                
+                const { privateKey: privKey, publicKey: pubKey } = await openpgp.generateKey({
+                    type: 'ecc',
+                    curve: 'curve25519',
+                    userIDs: [{ name: name, email: email }],
+                    passphrase: '',
+                    format: 'armored'
+                });
+                
+                privateKey = privKey;
+                publicKey = pubKey;
+                
+                localStorage.setItem('privateKey', privateKey);
+                localStorage.setItem('publicKey', publicKey);
+                
+                const profile = await extractUserProfile(publicKey);
+                userId = profile.id;
+                userName = profile.name;
+                userEmail = profile.email;
+                keyIdEl.textContent = userId;
+                
+                showNotification('密钥生成成功');
+                
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    registerUser();
+                }
+            } catch (error) {
+                showNotification('密钥生成失败: ' + error.message, 'error');
+            }
+        }
+        
+        async function extractUserProfile(publicKeyArmored) {
+            try {
+                const publicKeyObj = await openpgp.readKey({ armoredKey: publicKeyArmored });
+                const primaryUser = await publicKeyObj.getPrimaryUser();
+                const userID = primaryUser.user.userID;
+                
+                let name = '';
+                let email = '';
+                let id = '';
+                
+                if (userID) {
+                    const userIdString = userID.userID || '';
+                    const match = userIdString.match(/^(.+?)\s*<([^>]+)>$/);
+                    
+                    if (match) {
+                        name = match[1].trim();
+                        email = match[2].trim();
+                    } else {
+                        if (userIdString.includes('@')) {
+                            email = userIdString.trim();
+                            name = email.split('@')[0];
+                        } else {
+                            name = userIdString.trim();
+                        }
+                    }
+                }
+                
+                id = publicKeyObj.getFingerprint().toUpperCase();
+                
+                if (!name) {
+                    name = `User_${Math.random().toString(36).substr(2, 8)}`;
+                }
+                if (!email) {
+                    email = `${name.toLowerCase().replace(/\s+/g, '')}@example.com`;
+                }
+                
+                return { id, name, email };
+                
+            } catch (error) {
+                console.error('解析公钥时出错:', error);
+                return {
+                    id: Math.random().toString(36).substr(2, 8),
+                    name: 'Unknown User',
+                    email: 'unknown@example.com'
+                };
+            }
+        }
+        
+        function importPublicKey() {
+            const key = prompt('请粘贴公钥:');
+            if (key && key.includes('-----BEGIN PGP PUBLIC KEY BLOCK-----')) {
+                publicKey = key;
+                localStorage.setItem('publicKey', publicKey);
+                
+                extractUserProfile(publicKey).then(profile => {
+                    userId = profile.id;
+                    userName = profile.name;
+                    userEmail = profile.email;
+                    keyIdEl.textContent = userId;
+                    
+                    showNotification('公钥导入成功');
+                    
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        registerUser();
+                    }
+                });
+            } else {
+                showNotification('无效的公钥格式', 'error');
+            }
+        }
+        
+        function importPrivateKey() {
+            const key = prompt('请粘贴私钥:');
+            if (key && key.includes('-----BEGIN PGP PRIVATE KEY BLOCK-----')) {
+                privateKey = key;
+                localStorage.setItem('privateKey', privateKey);
+                showNotification('私钥导入成功');
+            } else {
+                showNotification('无效的私钥格式', 'error');
+            }
+        }
+        
+        function copyPublicKey() {
+            if (publicKey) {
+                navigator.clipboard.writeText(publicKey).then(() => {
+                    showNotification('公钥已复制到剪贴板');
+                });
+            } else {
+                showNotification('没有可复制的公钥', 'warning');
+            }
+        }
+        
+        async function sendMessage() {
+            const text = messageInputEl.value.trim();
+            if (!text || !publicKey) return;
+            
+            try {
+                const encryptedData = await encryptForAllUsers(text);
+                
+                const message = {
+                    type: 'message',
+                    encryptedData: encryptedData
+                };
+                
+                websocket.send(JSON.stringify(message));
+                messageInputEl.value = '';
+                
+            } catch (error) {
+                showNotification('消息发送失败: ' + error.message, 'error');
+            }
+        }
+        
+        async function encryptForAllUsers(text) {
+            const publicKeys = Array.from(users.values()).map(user => user.publicKey);
+            
+            if (publicKeys.length === 0) {
+                throw new Error('没有可用的公钥');
+            }
+            
+            const keys = await Promise.all(
+                publicKeys.map(key => openpgp.readKey({ armoredKey: key }))
+            );
+            
+            const message = await openpgp.createMessage({ text: text });
+            const encrypted = await openpgp.encrypt({
+                message: message,
+                encryptionKeys: keys,
+                format: 'armored'
+            });
+            
+            return encrypted;
+        }
+        
+        async function handleEncryptedMessage(message) {
+            if (!privateKey) {
+                displayEncryptedMessage(message);
+                return;
+            }
+            
+            try {
+                const encryptedMessage = await openpgp.readMessage({
+                    armoredMessage: message.encryptedData
+                });
+                
+                const privKey = await openpgp.readPrivateKey({
+                    armoredKey: privateKey
+                });
+                
+                const { data: decrypted } = await openpgp.decrypt({
+                    message: encryptedMessage,
+                    decryptionKeys: privKey
+                });
+                
+                displayMessage(message.senderId, decrypted, message.timestamp);
+                
+            } catch (error) {
+                console.error('解密失败:', error);
+                displayEncryptedMessage(message);
+            }
+        }
+        
+        function displayMessage(senderId, text, timestamp) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${senderId === userId ? 'sent' : 'received'}`;
+            
+            const senderName = getUserName(senderId);
+            const time = new Date(timestamp).toLocaleTimeString();
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="message-text">${text}</div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function displayEncryptedMessage(message) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message received encrypted';
+            
+            const senderName = getUserName(message.senderId);
+            const time = new Date(message.timestamp).toLocaleTimeString();
+            
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="message-text">🔒 加密消息 (需要私钥解密)</div>
+            `;
+            
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        function showNotification(message, type = 'success') {
+            notificationEl.textContent = message;
+            notificationEl.className = `notification ${type}`;
+            notificationEl.classList.add('show');
+            
+            setTimeout(() => {
+                notificationEl.classList.remove('show');
+            }, 3000);
+        }
+        
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', init);
+        
+        // 页面卸载时清理 WebRTC 连接
+        window.addEventListener('beforeunload', () => {
+            if (webrtcManager) {
+                webrtcManager.cleanup();
+            }
+        });
+    </script>
+</body>
+</html>
