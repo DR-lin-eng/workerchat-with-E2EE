@@ -309,31 +309,45 @@
             <input type="text" id="roomIdInput" placeholder="输入房间ID（可选，留空自动生成）">
             <div class="room-buttons">
                 <button class="room-btn primary" onclick="joinRoom('realtime')">
-                    加入实时传输房间
+                    进入实时传输房间
                 </button>
                 <button class="room-btn secondary" onclick="joinRoom('webrtc')">
-                    加入 P2P 房间
+                    进入 P2P 房间
                 </button>
                 <button class="room-btn tertiary" onclick="generateRoom()">
                     生成新房间ID
                 </button>
+            </div>
+            <div style="font-size: 0.8em; color: rgba(255,255,255,0.7); margin-top: 10px; text-align: center;">
+                💡 如果房间ID为空，系统会自动生成新的房间
             </div>
         </div>
     </div>
 
     <script>
         function joinRoom(type) {
-            const roomId = document.getElementById('roomIdInput').value.trim();
-            const url = roomId ? `/${type}.html?room=${roomId}` : `/${type}.html`;
+            let roomId = document.getElementById('roomIdInput').value.trim();
+
+            // 如果没有输入房间ID，自动生成一个
+            if (!roomId) {
+                roomId = generateRoomId();
+            }
+
+            const url = `/${type}.html?room=${roomId}`;
             window.location.href = url;
         }
 
-        function generateRoom() {
+        function generateRoomId() {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
             let roomId = '';
-            for (let i = 0; i < 16; i++) {
+            for (let i = 0; i < 64; i++) { // 使用64位长度与后端一致
                 roomId += chars.charAt(Math.floor(Math.random() * chars.length));
             }
+            return roomId;
+        }
+
+        function generateRoom() {
+            const roomId = generateRoomId();
             document.getElementById('roomIdInput').value = roomId;
         }
 

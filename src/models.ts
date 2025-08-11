@@ -44,7 +44,6 @@ export interface InviteLink {
 export interface UserInfo {
     id: string;
     name: string;
-    email: string;
     publicKey: string;
     webSocket: WebSocket;
     role: UserRole;
@@ -61,7 +60,6 @@ export interface BanRecord {
 export interface UserProfile {
     id: string; // 即keyid(long)
     name: string;
-    email: string;
 }
 
 // 文件分片信息
@@ -106,7 +104,6 @@ export interface UserListMessage {
     users: Array<{
         id: string;
         name: string;
-        email: string;
         publicKey: string;
     }>;
 }

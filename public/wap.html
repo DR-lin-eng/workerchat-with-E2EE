@@ -125,10 +125,7 @@
             font-family: monospace;
         }
         
-        .user-email {
-            font-size: 0.75rem;
-            color: #aaa;
-        }
+
 
         .chat-area {
             display: flex;
@@ -656,7 +653,6 @@
         let publicKey = '';
         let userId = '';
         let userName = '';
-        let userEmail = '';
         let websocket = null;
         let roomId = '';
         let users = new Map();
@@ -879,7 +875,6 @@
                 case 'authenticated':
                     userId = data.profile.id;
                     userName = data.profile.name;
-                    userEmail = data.profile.email;
                     keyIdEl.textContent = userId;
                     mobileKeyIdEl.textContent = userId.substring(24, 40);
                     showNotification('身份验证成功');
@@ -924,7 +919,6 @@
                     
                     userId = pubKey.getKeyID().toHex();
                     userName = userID?.name || '匿名';
-                    userEmail = userID?.email || '';
                     
                     keyIdEl.textContent = userId;
                     mobileKeyIdEl.textContent = userId.substring(24, 40);
@@ -966,7 +960,6 @@
                             const userID = pubKey.users[0].userID;
                             userId = pubKey.getKeyID().toHex();
                             userName = userID?.name || '匿名';
-                            userEmail = userID?.email || '';
                             
                             keyIdEl.textContent = userId;
                             mobileKeyIdEl.textContent = userId.substring(24, 40);
@@ -995,7 +988,6 @@
                                 const userID = privKey.users[0].userID;
                                 userId = privKey.getKeyID().toHex();
                                 userName = userID?.name || '匿名';
-                                userEmail = userID?.email || '';
                                 
                                 keyIdEl.textContent = userId;
                                 mobileKeyIdEl.textContent = userId.substring(24, 40);
@@ -1055,8 +1047,7 @@
                     type: 'ecc',
                     curve: 'curve25519',
                     userIDs: [{ 
-                        name: `用户${Math.floor(Math.random() * 1000)}`,
-                        email: `user${Math.floor(Math.random() * 1000)}@example.com`
+                        name: `用户${Math.floor(Math.random() * 1000)}`
                     }],
                     passphrase: '' // 不使用密码保护
                 });
@@ -1076,7 +1067,6 @@
                 const userID = pubKeyObj.users[0].userID;
                 userId = pubKeyObj.getKeyID().toHex();
                 userName = userID?.name || '匿名';
-                userEmail = userID?.email || '';
                 
                 keyIdEl.textContent = userId;
                 mobileKeyIdEl.textContent = userId.substring(24, 40);
@@ -1216,7 +1206,6 @@
                 userEl.innerHTML = `
                     <div class="user-name">${user.name}${user.id === userId ? ' (你)' : ''}</div>
                     <div class="user-id">${idDisplay}</div>
-                    ${user.email ? `<div class="user-email">${user.email}</div>` : ''}
                 `;
                 
                 userListEl.appendChild(userEl);

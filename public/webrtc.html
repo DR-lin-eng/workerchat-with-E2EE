@@ -542,7 +542,6 @@
         let publicKey = '';
         let userId = '';
         let userName = '';
-        let userEmail = '';
         let websocket = null;
         let roomId = '';
         let users = new Map();
@@ -563,6 +562,7 @@
         const connectionStatusEl = document.getElementById('connectionStatus');
         const fileInputEl = document.getElementById('fileInput');
         const fileBtnEl = document.getElementById('fileBtn');
+        const roomUrlEl = document.getElementById('roomUrl');
         
         // WebRTC 管理器类
         class WebRTCManager {
@@ -897,6 +897,9 @@
             
             // 绑定事件
             bindEvents();
+            
+            // 显示房间链接
+            displayRoomUrl();
         }
         
         function bindEvents() {
@@ -995,7 +998,6 @@
         function handleRegistered(message) {
             userId = message.profile.id;
             userName = message.profile.name;
-            userEmail = message.profile.email;
             
             messageInputEl.disabled = false;
             sendButtonEl.disabled = false;
@@ -1190,7 +1192,6 @@
                 extractUserProfile(publicKey).then(profile => {
                     userId = profile.id;
                     userName = profile.name;
-                    userEmail = profile.email;
                     keyIdEl.textContent = userId;
                     
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
@@ -1214,12 +1215,11 @@
         async function generateKeys() {
             try {
                 const name = prompt('请输入您的姓名:') || 'Anonymous';
-                const email = prompt('请输入您的邮箱:') || 'anonymous@example.com';
                 
                 const { privateKey: privKey, publicKey: pubKey } = await openpgp.generateKey({
                     type: 'ecc',
                     curve: 'curve25519',
-                    userIDs: [{ name: name, email: email }],
+                    userIDs: [{ name: name }],
                     passphrase: '',
                     format: 'armored'
                 });
@@ -1233,7 +1233,6 @@
                 const profile = await extractUserProfile(publicKey);
                 userId = profile.id;
                 userName = profile.name;
-                userEmail = profile.email;
                 keyIdEl.textContent = userId;
                 
                 showNotification('密钥生成成功');
@@ -1303,7 +1302,6 @@
                 extractUserProfile(publicKey).then(profile => {
                     userId = profile.id;
                     userName = profile.name;
-                    userEmail = profile.email;
                     keyIdEl.textContent = userId;
                     
                     showNotification('公钥导入成功');
@@ -1453,6 +1451,23 @@
             setTimeout(() => {
                 notificationEl.classList.remove('show');
             }, 3000);
+        }
+        
+        // 显示房间链接
+        function displayRoomUrl() {
+            // 构建包含房间ID的完整URL
+            const baseUrl = window.location.origin + window.location.pathname;
+            const roomUrl = `${baseUrl}?room=${roomId}`;
+            
+            roomUrlEl.textContent = roomUrl;
+            roomUrlEl.title = '点击复制房间链接';
+            roomUrlEl.addEventListener('click', () => {
+                navigator.clipboard.writeText(roomUrl).then(() => {
+                    showNotification('房间链接已复制到剪贴板');
+                }).catch(err => {
+                    showNotification('复制失败: ' + err.message, 'error');
+                });
+            });
         }
         
         // 页面加载完成后初始化

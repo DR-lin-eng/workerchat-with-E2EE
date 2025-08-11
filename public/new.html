@@ -485,11 +485,7 @@
             word-break: break-all;
         }
         
-        .user-email {
-            font-size: 12px;
-            color: var(--md-sys-color-on-surface-variant);
-            margin-top: 2px;
-        }
+
         
         /* 密钥管理 - MD3风格 */
         .key-info {
@@ -862,7 +858,6 @@
         let publicKey = '';
         let userId = '';
         let userName = '';
-        let userEmail = '';
         let websocket = null;
         let roomId = '';
         let users = new Map();
@@ -1093,7 +1088,6 @@
                 case 'authenticated':
                     userId = data.profile.id;
                     userName = data.profile.name;
-                    userEmail = data.profile.email;
                     keyIdEl.textContent = userId;
                     showNotification('身份验证成功');
                     enableUI();
@@ -1137,7 +1131,6 @@
                     
                     userId = pubKey.getKeyID().toHex();
                     userName = userID?.name || '匿名';
-                    userEmail = userID?.email || '';
                     
                     keyIdEl.textContent = userId;
                     debugLog('本地密钥加载成功');
@@ -1178,7 +1171,6 @@
                             const userID = pubKey.users[0].userID;
                             userId = pubKey.getKeyID().toHex();
                             userName = userID?.name || '匿名';
-                            userEmail = userID?.email || '';
                             
                             keyIdEl.textContent = userId;
                             showNotification('公钥导入成功');
@@ -1206,7 +1198,6 @@
                                 const userID = privKey.users[0].userID;
                                 userId = privKey.getKeyID().toHex();
                                 userName = userID?.name || '匿名';
-                                userEmail = userID?.email || '';
                                 
                                 keyIdEl.textContent = userId;
                                 
@@ -1286,7 +1277,6 @@
                 const userID = pubKeyObj.users[0].userID;
                 userId = pubKeyObj.getKeyID().toHex();
                 userName = userID?.name || '匿名';
-                userEmail = userID?.email || '';
                 
                 keyIdEl.textContent = userId;
                 debugLog('密钥生成成功，用户ID: ' + userId);
@@ -1428,7 +1418,6 @@
                 userEl.innerHTML = `
                     <div class="user-name">${user.name}${user.id === userId ? ' (你)' : ''}</div>
                     <div class="user-id">${idDisplay}</div>
-                    ${user.email ? `<div class="user-email">${user.email}</div>` : ''}
                 `;
                 
                 userListEl.appendChild(userEl);

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>房间ID生成测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background: #007bff;
+            color: white;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .room-id {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            word-break: break-all;
+            margin: 10px 0;
+        }
+        .test-result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <h1>房间ID生成功能测试</h1>
+    
+    <div class="test-section">
+        <h2>1. 房间ID生成测试</h2>
+        <button onclick="testRoomIdGeneration()">生成房间ID</button>
+        <div id="roomIdDisplay" class="room-id">点击按钮生成房间ID</div>
+        <div id="roomIdTest" class="test-result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>2. 批量生成测试（检查重复）</h2>
+        <button onclick="testBatchGeneration()">生成100个房间ID</button>
+        <div id="batchTest" class="test-result"></div>
+        <div id="batchResults" style="max-height: 200px; overflow-y: auto;"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>3. URL跳转测试</h2>
+        <input type="text" id="testRoomInput" placeholder="输入房间ID（可选）" style="width: 300px; padding: 8px;">
+        <br><br>
+        <button onclick="testJoinRoom('realtime')">测试实时传输房间跳转</button>
+        <button onclick="testJoinRoom('webrtc')">测试P2P房间跳转</button>
+        <div id="urlTest" class="test-result"></div>
+    </div>
+
+    <script>
+        // 复制房间ID生成函数
+        function generateRoomId() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let roomId = '';
+            for (let i = 0; i < 64; i++) {
+                roomId += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return roomId;
+        }
+        
+        // 复制joinRoom函数逻辑
+        function joinRoom(type, roomId) {
+            if (!roomId) {
+                roomId = generateRoomId();
+            }
+            return `/${type}.html?room=${roomId}`;
+        }
+        
+        function testRoomIdGeneration() {
+            const roomId = generateRoomId();
+            document.getElementById('roomIdDisplay').textContent = roomId;
+            
+            let result = '';
+            let isValid = true;
+            
+            // 测试长度
+            if (roomId.length === 64) {
+                result += '✅ 长度正确 (64字符)\n';
+            } else {
+                result += `❌ 长度错误 (${roomId.length}字符，应为64字符)\n`;
+                isValid = false;
+            }
+            
+            // 测试字符集
+            const validChars = /^[A-Za-z0-9]+$/;
+            if (validChars.test(roomId)) {
+                result += '✅ 字符集正确 (仅包含字母和数字)\n';
+            } else {
+                result += '❌ 字符集错误 (包含非法字符)\n';
+                isValid = false;
+            }
+            
+            const testDiv = document.getElementById('roomIdTest');
+            testDiv.textContent = result;
+            testDiv.className = `test-result ${isValid ? 'success' : 'error'}`;
+        }
+        
+        function testBatchGeneration() {
+            const roomIds = new Set();
+            const results = [];
+            
+            for (let i = 0; i < 100; i++) {
+                const roomId = generateRoomId();
+                roomIds.add(roomId);
+                results.push(roomId);
+            }
+            
+            const uniqueCount = roomIds.size;
+            const duplicateCount = 100 - uniqueCount;
+            
+            let result = '';
+            if (duplicateCount === 0) {
+                result = `✅ 生成100个房间ID，全部唯一 (${uniqueCount}/100)`;
+            } else {
+                result = `⚠️ 生成100个房间ID，发现${duplicateCount}个重复 (${uniqueCount}/100)`;
+            }
+            
+            const testDiv = document.getElementById('batchTest');
+            testDiv.textContent = result;
+            testDiv.className = `test-result ${duplicateCount === 0 ? 'success' : 'error'}`;
+            
+            // 显示前10个结果
+            const resultsDiv = document.getElementById('batchResults');
+            resultsDiv.innerHTML = '<h4>前10个生成的房间ID:</h4>' + 
+                results.slice(0, 10).map((id, index) => 
+                    `<div style="font-family: monospace; font-size: 0.8em; margin: 2px 0;">${index + 1}. ${id}</div>`
+                ).join('');
+        }
+        
+        function testJoinRoom(type) {
+            const inputRoomId = document.getElementById('testRoomInput').value.trim();
+            const url = joinRoom(type, inputRoomId);
+            
+            let result = '';
+            if (inputRoomId) {
+                result = `✅ 使用指定房间ID: ${inputRoomId}\n生成URL: ${url}`;
+            } else {
+                const urlParams = new URLSearchParams(url.split('?')[1]);
+                const generatedRoomId = urlParams.get('room');
+                result = `✅ 自动生成房间ID: ${generatedRoomId}\n生成URL: ${url}`;
+            }
+            
+            const testDiv = document.getElementById('urlTest');
+            testDiv.textContent = result;
+            testDiv.className = 'test-result success';
+        }
+        
+        // 页面加载时自动运行一次测试
+        window.onload = function() {
+            testRoomIdGeneration();
+        };
+    </script>
+</body>
+</html>

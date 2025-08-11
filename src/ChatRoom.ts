@@ -125,7 +125,6 @@ export class ChatRoom {
             const userInfo: UserInfo = {
                 id: userProfile.id,
                 name: userProfile.name,
-                email: userProfile.email,
                 publicKey: message.publicKey,
                 webSocket: webSocket,
                 role: UserRole.GUEST
@@ -143,8 +142,7 @@ export class ChatRoom {
                 type: 'registered',
                 profile: {
                     id: userInfo.id,
-                    name: userInfo.name,
-                    email: userInfo.email
+                    name: userInfo.name
                 }
             };
             
@@ -160,7 +158,6 @@ export class ChatRoom {
         const users = Array.from(this.users.values()).map(user => ({
             id: user.id,
             name: user.name,
-            email: user.email,
             publicKey: user.publicKey
         }));
 
@@ -396,7 +393,6 @@ export class ChatRoom {
         const users = Array.from(this.users.values()).map(user => ({
             id: user.id,
             name: user.name,
-            email: user.email,
             publicKey: user.publicKey
         }));
 
@@ -447,7 +443,6 @@ export class ChatRoom {
             const userID = primaryUser.user.userID;
             
             let name = '';
-            let email = '';
             let id = '';
             
             if (userID) {
@@ -456,11 +451,9 @@ export class ChatRoom {
                 
                 if (match) {
                     name = match[1].trim();
-                    email = match[2].trim();
                 } else {
                     if (userIdString.includes('@')) {
-                        email = userIdString.trim();
-                        name = email.split('@')[0];
+                        name = userIdString.split('@')[0];
                     } else {
                         name = userIdString.trim();
                     }
@@ -472,11 +465,8 @@ export class ChatRoom {
             if (!name) {
                 name = `User_${Math.random().toString(36).substr(2, 8)}`;
             }
-            if (!email) {
-                email = `${name.toLowerCase().replace(/\s+/g, '')}@example.com`;
-            }
             
-            return { id, name, email };
+            return { id, name };
             
         } catch (error) {
             console.error('解析公钥时出错:', error);
@@ -487,7 +477,6 @@ export class ChatRoom {
     private fallbackExtractUserProfile(publicKey: string): UserProfile {
         const lines = publicKey.split('\n');
         let name = `User_${Math.random().toString(36).substr(2, 8)}`;
-        let email = `${name.toLowerCase()}@example.com`;
         let id = this.generateUserIdFromKey(publicKey);
 
         for (const line of lines) {
@@ -495,12 +484,11 @@ export class ChatRoom {
                 const match = line.match(/([\w\s]+)\s*<([^>]+)>/);
                 if (match) {
                     name = match[1].trim();
-                    email = match[2].trim();
                 }
             }
         }
 
-        return { id, name, email };
+        return { id, name };
     }
 
     private handleWebRTCSignaling(webSocket: WebSocket, message: WebRTCSignalingMessage): void {
