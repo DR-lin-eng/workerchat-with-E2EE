@@ -130,7 +130,7 @@ export class FileTransferManager {
         const totalChunks = session.totalChunks!;
         
         // 并发传输配置
-        const maxConcurrentChunks = 30; // 默认使用30并发
+        const maxConcurrentChunks = 100; // 默认使用30并发
         const sendQueue = new Set<number>(); // 正在发送的分片索引
         const completedChunks = new Set<number>(); // 已完成的分片索引
         let nextChunkIndex = 0;
