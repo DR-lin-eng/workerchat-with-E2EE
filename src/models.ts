@@ -147,6 +147,8 @@ export interface LiveAudioMessage {
     type: 'liveAudio';
     encryptedAudioData: string; // 加密的实时音频数据
     timestamp: number;
+    audioFormat?: string; // 音频格式 (可选)
+    audioSize?: number; // 音频大小 (可选)
 }
 
 // 文件传输状态请求

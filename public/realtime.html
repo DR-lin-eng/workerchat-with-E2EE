@@ -621,6 +621,9 @@
                             📞 实时语音
                         </button>
                         <span id="voiceStatus" style="font-size: 0.8em; color: #ccc;"></span>
+                        <div id="smartPlaybackStatus" style="font-size: 0.75em; color: #4ec9b0; margin-top: 5px; display: none;">
+                            🧠 智能播放: 0% 成功率
+                        </div>
                     </div>
                     <textarea id="messageInput" placeholder="输入消息..." disabled></textarea>
                 </div>
@@ -672,6 +675,11 @@
         let isProcessingAudio = new Map(); // 处理状态
         let audioPlaybackTimers = new Map(); // 播放定时器
         
+        // 智能音频播放相关
+        let headerChunks = new Map(); // 存储每个用户的头信息块
+        let playbackStats = new Map(); // 播放统计 {success: 0, total: 0}
+        let smartPlaybackEnabled = true; // 启用智能播放
+        
         // DOM元素
         const userListEl = document.getElementById('userList');
         const messagesEl = document.getElementById('messages');
@@ -693,6 +701,7 @@
         const voiceBtnEl = document.getElementById('voiceBtn');
         const liveVoiceBtnEl = document.getElementById('liveVoiceBtn');
         const voiceStatusEl = document.getElementById('voiceStatus');
+        const smartPlaybackStatusEl = document.getElementById('smartPlaybackStatus');
         const transferStatusEl = document.getElementById('transferStatus');
         const transferListEl = document.getElementById('transferList');
         const roomUrlEl = document.getElementById('roomUrl');
@@ -701,14 +710,34 @@
         class FileTransferManager {
             constructor(websocket) {
                 this.websocket = websocket;
-                this.chunkSize = 64 * 1024; // 64KB chunks
                 this.pendingTransfers = new Map(); // 存储待处理的传输请求
+            }
+            
+            // 计算最优分片大小 (单个分片最大500MB)
+            calculateOptimalChunkSize(fileSize) {
+                const maxChunkSize = 500 * 1024 * 1024; // 500MB 最大分片
+                
+                if (fileSize < 10 * 1024 * 1024) { // < 10MB
+                    return 64 * 1024; // 64KB
+                } else if (fileSize < 100 * 1024 * 1024) { // < 100MB
+                    return 256 * 1024; // 256KB
+                } else if (fileSize < 1024 * 1024 * 1024) { // < 1GB
+                    return 512 * 1024; // 512KB
+                } else if (fileSize < 10 * 1024 * 1024 * 1024) { // < 10GB
+                    return 1024 * 1024; // 1MB
+                } else if (fileSize < 100 * 1024 * 1024 * 1024) { // < 100GB
+                    return 10 * 1024 * 1024; // 10MB
+                } else { // >= 100GB
+                    // 对于超大文件，使用最大允许的分片大小
+                    return maxChunkSize; // 500MB
+                }
             }
             
             async initiateFileTransfer(targetUserId, file) {
                 const transferId = this.generateTransferId();
                 const fileHash = await this.calculateMD5(file);
-                const totalChunks = Math.ceil(file.size / this.chunkSize);
+                const chunkSize = this.calculateOptimalChunkSize(file.size);
+                const totalChunks = Math.ceil(file.size / chunkSize);
 
                 // 存储传输信息
                 activeTransfers.set(transferId, {
@@ -717,6 +746,7 @@
                     targetUserId: targetUserId,
                     fileHash: fileHash,
                     totalChunks: totalChunks,
+                    chunkSize: chunkSize,
                     progress: 0,
                     status: 'requesting'
                 });
@@ -732,7 +762,7 @@
                         fileType: file.type,
                         fileHash,
                         totalChunks,
-                        chunkSize: this.chunkSize
+                        chunkSize: chunkSize
                     }
                 };
 
@@ -838,8 +868,8 @@
                         return;
                     }
 
-                    const start = chunkIndex * this.chunkSize;
-                    const end = Math.min(start + this.chunkSize, file.size);
+                    const start = chunkIndex * transfer.chunkSize;
+                    const end = Math.min(start + transfer.chunkSize, file.size);
                     const chunk = file.slice(start, end);
 
                     reader.onload = (e) => {
@@ -1074,6 +1104,14 @@
             // 初始化音频播放上下文（需要用户交互）
             initAudioContextOnUserInteraction();
             
+            // 显示智能播放功能信息
+            console.log('🧠 智能音频播放已启用');
+            console.log('✨ 功能特性:');
+            console.log('  - 自动检测音频头信息块');
+            console.log('  - 智能合并播放策略');
+            console.log('  - 实时播放成功率监控');
+            console.log('  - 多重播放方法fallback');
+            
             // 绑定事件
             bindEvents();
             
@@ -1145,6 +1183,9 @@
             websocket.onclose = () => {
                 connectionStatusEl.textContent = '连接断开';
                 connectionStatusEl.className = 'connection-status status-disconnected';
+                
+                // 清理智能播放数据
+                clearSmartPlaybackData();
                 
                 // 尝试重连
                 setTimeout(connectWebSocket, 3000);
@@ -2055,10 +2096,30 @@
                 analyser.fftSize = 256;
                 source.connect(analyser);
                 
-                // 创建媒体录制器用于实时传输，提高码率
+                // 创建媒体录制器用于实时传输，优化设置
+                const supportedMimeTypes = [
+                    'audio/webm;codecs=opus',
+                    'audio/webm',
+                    'audio/ogg;codecs=opus',
+                    'audio/ogg'
+                ];
+                
+                let selectedMimeType = null;
+                for (const mimeType of supportedMimeTypes) {
+                    if (MediaRecorder.isTypeSupported(mimeType)) {
+                        selectedMimeType = mimeType;
+                        console.log(`使用音频格式: ${mimeType}`);
+                        break;
+                    }
+                }
+                
+                if (!selectedMimeType) {
+                    throw new Error('浏览器不支持任何音频录制格式');
+                }
+                
                 const recorderOptions = {
-                    mimeType: 'audio/webm;codecs=opus',
-                    audioBitsPerSecond: 128000 // 128kbps，提高音质
+                    mimeType: selectedMimeType,
+                    audioBitsPerSecond: 64000 // 64kbps，平衡音质和传输速度
                 };
                 
                 // 如果浏览器不支持指定码率，使用默认设置
@@ -2067,20 +2128,25 @@
                 } catch (error) {
                     console.log('使用默认录制设置:', error.message);
                     liveMediaRecorder = new MediaRecorder(liveAudioStream, {
-                        mimeType: 'audio/webm;codecs=opus'
+                        mimeType: selectedMimeType
                     });
                 }
                 
                 liveMediaRecorder.ondataavailable = async (event) => {
                     if (event.data.size > 0) {
-                        console.log(`录制音频块: ${event.data.size} 字节`);
+                        console.log(`录制音频块: ${event.data.size} 字节, 类型: ${event.data.type}`);
                         // 立即发送每个音频块，减少延迟
                         await sendLiveAudioChunk(event.data);
                     }
                 };
                 
-                // 开始录制，每100ms产生一个数据块，更频繁的数据传输
-                liveMediaRecorder.start(100);
+                liveMediaRecorder.onerror = (event) => {
+                    console.error('录制器错误:', event.error);
+                    showNotification('录制错误: ' + event.error.message, 'error');
+                };
+                
+                // 开始录制，每200ms产生一个数据块，平衡延迟和数据完整性
+                liveMediaRecorder.start(200);
                 
                 isLiveVoiceActive = true;
                 liveVoiceBtnEl.textContent = '📞 停止实时语音';
@@ -2127,6 +2193,9 @@
             // 清理所有音频流
             cleanupAllAudioStreams();
             
+            // 清理智能播放数据
+            clearSmartPlaybackData();
+            
             // 清理音频指示器
             if (audioIndicatorElement && audioIndicatorElement.parentNode) {
                 audioIndicatorElement.parentNode.removeChild(audioIndicatorElement);
@@ -2146,8 +2215,20 @@
         
         async function sendLiveAudioChunk(audioBlob) {
             try {
+                // 验证音频数据
+                if (!audioBlob || audioBlob.size === 0) {
+                    console.log('跳过空音频块');
+                    return;
+                }
+                
+                console.log(`发送音频块: ${audioBlob.size} 字节, 类型: ${audioBlob.type}`);
+                
                 const arrayBuffer = await audioBlob.arrayBuffer();
                 const audioData = new Uint8Array(arrayBuffer);
+                
+                // 验证音频数据头
+                const header = Array.from(audioData.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join('');
+                console.log(`发送音频数据头: ${header}, 大小: ${audioData.length} 字节`);
                 
                 // 加密音频数据
                 const encryptedAudioData = await encryptForAllUsers(audioData);
@@ -2155,7 +2236,9 @@
                 const liveAudioMessage = {
                     type: 'liveAudio',
                     encryptedAudioData: encryptedAudioData,
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    audioFormat: audioBlob.type || 'audio/webm;codecs=opus',
+                    audioSize: audioData.length
                 };
                 
                 if (websocket && websocket.readyState === WebSocket.OPEN) {
@@ -2260,7 +2343,7 @@
             document.addEventListener('touchstart', initOnClick);
         }
         
-        // 处理接收到的实时音频
+        // 处理接收到的实时音频 - 智能版本
         async function handleLiveAudio(message) {
             if (!privateKey) {
                 return;
@@ -2271,402 +2354,483 @@
                 const decryptedData = await decryptMessage(message.encryptedAudioData);
                 const audioData = new Uint8Array(decryptedData);
                 
-                console.log(`接收到音频数据: ${audioData.length} 字节`);
+                console.log(`接收到音频数据: ${audioData.length} 字节 from ${message.senderId.slice(-8)}`);
                 
-                // 处理实际音频播放 - 不等待播放完成，避免阻塞后续音频
-                processRealAudioPlayback(message.senderId, audioData).catch(error => {
-                    console.error('音频播放异步处理失败:', error);
-                });
+                // 使用智能音频播放
+                await smartAudioPlayback(message.senderId, audioData);
                 
                 // 显示音频接收指示器
                 showAudioReceiveIndicator();
                 
             } catch (error) {
                 console.error('处理实时音频失败:', error);
+                showAudioReceiveIndicator(); // 即使失败也显示接收指示器
             }
         }
         
-        // 处理实际音频播放
-        async function processRealAudioPlayback(senderId, audioData) {
+        // 智能音频播放核心逻辑
+        async function smartAudioPlayback(senderId, audioData) {
             try {
-                // 使用智能缓冲播放策略
-                await smartBufferedPlayback(senderId, audioData);
-                
-            } catch (error) {
-                console.error('处理音频播放失败:', error);
-            }
-        }
-        
-        // 智能缓冲播放
-        async function smartBufferedPlayback(senderId, audioData) {
-            try {
-                // 初始化用户的音频缓冲区
+                // 初始化用户数据
                 if (!audioStreamBuffer.has(senderId)) {
                     audioStreamBuffer.set(senderId, {
                         chunks: [],
                         totalSize: 0,
-                        lastChunkTime: Date.now(),
-                        isPlaying: false,
-                        playbackStarted: false
+                        lastUpdate: Date.now(),
+                        isProcessing: false
                     });
+                    playbackStats.set(senderId, { success: 0, total: 0 });
                 }
                 
                 const buffer = audioStreamBuffer.get(senderId);
+                const stats = playbackStats.get(senderId);
+                
                 buffer.chunks.push(audioData);
                 buffer.totalSize += audioData.length;
-                buffer.lastChunkTime = Date.now();
+                buffer.lastUpdate = Date.now();
+                stats.total++;
                 
-                console.log(`缓冲音频: ${audioData.length} 字节，总计 ${buffer.totalSize} 字节，${buffer.chunks.length} 块`);
+                console.log(`智能缓冲 [${senderId.slice(-8)}]: ${audioData.length} 字节，总计: ${buffer.totalSize} 字节`);
                 
-                // 更灵活的播放策略：支持小块音频
-                const minBufferSize = 2000; // 降低到2KB，支持更小的音频块
-                const maxWaitTime = 200; // 减少等待时间到200ms
-                const timeSinceLastChunk = Date.now() - buffer.lastChunkTime;
-                
-                if (!buffer.isPlaying && !buffer.playbackStarted) {
-                    if (buffer.totalSize >= minBufferSize || timeSinceLastChunk > maxWaitTime || buffer.chunks.length >= 2) {
-                        buffer.isPlaying = true;
-                        buffer.playbackStarted = true;
-                        attemptBufferedPlayback(senderId);
-                    } else {
-                        // 设置超时播放
-                        setTimeout(() => {
-                            if (audioStreamBuffer.has(senderId)) {
-                                const currentBuffer = audioStreamBuffer.get(senderId);
-                                if (!currentBuffer.isPlaying && currentBuffer.chunks.length > 0) {
-                                    currentBuffer.isPlaying = true;
-                                    currentBuffer.playbackStarted = true;
-                                    attemptBufferedPlayback(senderId);
-                                }
-                            }
-                        }, maxWaitTime);
-                    }
+                // 如果不在处理中，开始智能播放
+                if (!buffer.isProcessing) {
+                    buffer.isProcessing = true;
+                    await processSmartAudioBuffer(senderId);
                 }
                 
             } catch (error) {
-                console.error('智能缓冲播放失败:', error);
+                console.error('智能音频播放失败:', error);
+                showAudioReceiveIndicator();
             }
         }
         
-        // 尝试播放缓冲的音频数据
-        async function attemptBufferedPlayback(senderId) {
+        // 处理智能音频缓冲区
+        async function processSmartAudioBuffer(senderId) {
             const buffer = audioStreamBuffer.get(senderId);
+            const stats = playbackStats.get(senderId);
+            
             if (!buffer || buffer.chunks.length === 0) {
-                if (buffer) {
-                    buffer.isPlaying = false;
-                    buffer.playbackStarted = false;
-                }
-                // 清理该用户的定时器
-                if (audioPlaybackTimers.has(senderId)) {
-                    clearTimeout(audioPlaybackTimers.get(senderId));
-                    audioPlaybackTimers.delete(senderId);
-                }
+                if (buffer) buffer.isProcessing = false;
                 return;
             }
             
             try {
-                // 合并音频块，支持小块播放
-                let chunksToMerge = Math.min(3, buffer.chunks.length); // 最多合并3个块
+                let playSuccess = false;
                 
-                // 如果只有一个块，也尝试播放
-                if (buffer.chunks.length === 1) {
-                    chunksToMerge = 1;
-                } else {
-                    // 确保合并后的大小合理
-                    let previewSize = 0;
-                    for (let i = 0; i < chunksToMerge; i++) {
-                        previewSize += buffer.chunks[i].length;
-                        if (previewSize >= 5000) { // 降低到5KB
-                            chunksToMerge = i + 1;
-                            break;
-                        }
+                // 策略1: 如果有头信息块，与头信息块合并播放
+                if (headerChunks.has(senderId) && buffer.chunks.length > 0) {
+                    const headerChunk = headerChunks.get(senderId);
+                    const currentChunk = buffer.chunks.shift();
+                    buffer.totalSize -= currentChunk.length;
+                    
+                    const mergedAudio = new Uint8Array(headerChunk.length + currentChunk.length);
+                    mergedAudio.set(headerChunk, 0);
+                    mergedAudio.set(currentChunk, headerChunk.length);
+                    
+                    if (await trySmartPlayAudio(mergedAudio)) {
+                        console.log(`智能播放成功 [${senderId.slice(-8)}]: 头信息合并 (${mergedAudio.length} 字节)`);
+                        stats.success++;
+                        playSuccess = true;
                     }
                 }
                 
-                const mergedChunks = buffer.chunks.splice(0, chunksToMerge);
-                
-                // 计算总大小
-                const totalSize = mergedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-                buffer.totalSize -= totalSize;
-                
-                // 合并音频数据
-                const mergedAudio = new Uint8Array(totalSize);
-                let offset = 0;
-                for (const chunk of mergedChunks) {
-                    mergedAudio.set(chunk, offset);
-                    offset += chunk.length;
+                // 策略2: 测试第一个块是否包含头信息
+                if (!playSuccess && !headerChunks.has(senderId) && buffer.chunks.length > 0) {
+                    const firstChunk = buffer.chunks[0];
+                    
+                    if (await trySmartPlayAudio(firstChunk)) {
+                        console.log(`发现头信息块 [${senderId.slice(-8)}]: ${firstChunk.length} 字节`);
+                        headerChunks.set(senderId, firstChunk);
+                        buffer.chunks.shift();
+                        buffer.totalSize -= firstChunk.length;
+                        stats.success++;
+                        playSuccess = true;
+                        
+                        // 显示成功率
+                        const successRate = ((stats.success / stats.total) * 100).toFixed(1);
+                        console.log(`播放成功率 [${senderId.slice(-8)}]: ${successRate}% (${stats.success}/${stats.total})`);
+                    }
                 }
                 
-                console.log(`播放合并音频块: ${totalSize} 字节 (合并了 ${chunksToMerge} 个块)，剩余 ${buffer.chunks.length} 块`);
+                // 策略3: 缓冲合并播放
+                if (!playSuccess && buffer.chunks.length >= 2) {
+                    const chunksToMerge = buffer.chunks.splice(0, 2);
+                    const mergedSize = chunksToMerge.reduce((sum, chunk) => sum + chunk.length, 0);
+                    buffer.totalSize -= mergedSize;
+                    
+                    const mergedAudio = new Uint8Array(mergedSize);
+                    let offset = 0;
+                    for (const chunk of chunksToMerge) {
+                        mergedAudio.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    
+                    if (await trySmartPlayAudio(mergedAudio)) {
+                        console.log(`智能播放成功 [${senderId.slice(-8)}]: 缓冲合并 (${mergedAudio.length} 字节)`);
+                        stats.success++;
+                        playSuccess = true;
+                    }
+                }
                 
-                // 尝试播放合并后的音频块
-                await tryMultiplePlaybackMethods(mergedAudio, senderId);
+                // 策略4: 单块播放（最后尝试）
+                if (!playSuccess && buffer.chunks.length > 0) {
+                    const singleChunk = buffer.chunks.shift();
+                    buffer.totalSize -= singleChunk.length;
+                    
+                    if (await trySmartPlayAudio(singleChunk)) {
+                        console.log(`智能播放成功 [${senderId.slice(-8)}]: 单块播放 (${singleChunk.length} 字节)`);
+                        stats.success++;
+                        playSuccess = true;
+                    }
+                }
                 
-                // 继续播放下一批块
+                if (!playSuccess) {
+                    console.log(`智能播放失败 [${senderId.slice(-8)}]`);
+                }
+                
+                // 显示当前成功率
+                if (stats.total > 0) {
+                    const successRate = ((stats.success / stats.total) * 100).toFixed(1);
+                    if (stats.total % 5 === 0) { // 每5个块显示一次统计
+                        console.log(`📊 播放统计 [${senderId.slice(-8)}]: ${successRate}% 成功率 (${stats.success}/${stats.total})`);
+                    }
+                    // 更新界面显示
+                    updateSmartPlaybackStatus();
+                }
+                
+                // 继续处理剩余数据
                 if (buffer.chunks.length > 0) {
-                    // 清理之前的定时器
-                    if (audioPlaybackTimers.has(senderId)) {
-                        clearTimeout(audioPlaybackTimers.get(senderId));
-                    }
-                    
-                    // 设置新的定时器，延迟后播放下一批块
-                    const timer = setTimeout(() => {
-                        audioPlaybackTimers.delete(senderId);
-                        attemptBufferedPlayback(senderId);
-                    }, 200); // 给音频播放留出时间
-                    
-                    audioPlaybackTimers.set(senderId, timer);
+                    setTimeout(() => processSmartAudioBuffer(senderId), 50);
                 } else {
-                    buffer.isPlaying = false;
-                    buffer.playbackStarted = false;
+                    buffer.isProcessing = false;
                 }
                 
             } catch (error) {
-                console.error('缓冲播放失败:', error);
-                if (buffer) {
-                    buffer.isPlaying = false;
-                    buffer.playbackStarted = false;
-                }
-                // 清理定时器
-                if (audioPlaybackTimers.has(senderId)) {
-                    clearTimeout(audioPlaybackTimers.get(senderId));
-                    audioPlaybackTimers.delete(senderId);
-                }
+                console.error('智能音频处理失败:', error);
+                buffer.isProcessing = false;
             }
         }
         
-        // 验证音频数据
-        function validateAudioData(audioData) {
-            if (audioData.length < 100) {
-                return { valid: false, reason: '数据太小' };
+        // 智能音频播放尝试
+        async function trySmartPlayAudio(audioData) {
+            // 方法1: 直接播放 (更快，优先使用)
+            if (await tryDirectPlaySmart(audioData)) {
+                return true;
             }
             
-            // 检查音频数据头
-            const header = new Uint8Array(audioData.slice(0, 4));
-            const headerStr = Array.from(header).map(b => b.toString(16).padStart(2, '0')).join('');
+            // 方法2: Web Audio API (备用)
+            if (await tryWebAudioPlaySmart(audioData)) {
+                return true;
+            }
             
-            console.log(`音频数据头: ${headerStr}, 大小: ${audioData.length} 字节`);
-            
-            // 对于实时音频流，不严格检查文件头，因为可能是音频流片段
-            return { valid: true, reason: 'OK' };
+            return false;
         }
         
-        // 尝试多种播放方法
-        async function tryMultiplePlaybackMethods(audioData, senderId) {
-            // 验证音频数据
-            const validation = validateAudioData(audioData);
-            if (!validation.valid) {
-                console.log(`音频数据无效: ${validation.reason} (${audioData.length} 字节)`);
-                return;
-            }
-            
-            const methods = [
-                () => playWithStreamingAudio(audioData),
-                () => playWithAudioElement(audioData, 'audio/webm;codecs=opus'),
-                () => playWithAudioElement(audioData, 'audio/webm'),
-                () => playWithWebAudioAPI(audioData),
-                () => playWithAudioElement(audioData, 'audio/ogg;codecs=opus'),
-                () => playWithAudioElement(audioData, 'audio/ogg')
-            ];
-            
-            for (let i = 0; i < methods.length; i++) {
-                try {
-                    await methods[i]();
-                    console.log(`播放方法 ${i + 1} 成功 (${audioData.length} 字节)`);
-                    return;
-                } catch (error) {
-                    console.log(`播放方法 ${i + 1} 失败:`, error.message);
-                    if (i === methods.length - 1) {
-                        // 所有方法都失败，仅记录日志
-                        console.log(`所有播放方法都失败 (${audioData.length} 字节)`);
-                    }
-                }
-            }
-        }
-        
-        // 使用流式音频播放（专门处理实时音频流）
-        async function playWithStreamingAudio(audioData) {
+        // 智能直接播放
+        async function tryDirectPlaySmart(audioData) {
             try {
-                // 创建音频上下文
-                const audioContext = await initPlaybackAudioContext();
+                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio();
                 
-                // 尝试直接解码音频数据
-                let audioBuffer;
-                try {
-                    audioBuffer = await audioContext.decodeAudioData(audioData.buffer.slice());
-                } catch (decodeError) {
-                    // 如果直接解码失败，尝试包装为Blob
-                    const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
-                    const arrayBuffer = await audioBlob.arrayBuffer();
-                    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                }
-                
-                // 创建音频源
-                const source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                
-                // 创建增益节点
-                const gainNode = audioContext.createGain();
-                gainNode.gain.value = 1.0; // 提高音量
-                
-                // 连接音频节点
-                source.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-                
-                // 播放音频
-                source.start(0);
+                audio.src = audioUrl;
+                audio.volume = 0.7;
                 
                 return new Promise((resolve) => {
-                    source.onended = resolve;
-                    // 设置超时，防止永远不结束
-                    setTimeout(resolve, 5000);
+                    let resolved = false;
+                    
+                    const cleanup = () => {
+                        if (!resolved) {
+                            resolved = true;
+                            URL.revokeObjectURL(audioUrl);
+                        }
+                    };
+                    
+                    audio.oncanplaythrough = () => {
+                        audio.play().then(() => {
+                            cleanup();
+                            resolve(true);
+                        }).catch(() => {
+                            cleanup();
+                            resolve(false);
+                        });
+                    };
+                    
+                    audio.onerror = () => {
+                        cleanup();
+                        resolve(false);
+                    };
+                    
+                    // 快速超时，提高响应速度
+                    setTimeout(() => {
+                        cleanup();
+                        resolve(false);
+                    }, 500);
                 });
                 
             } catch (error) {
-                throw new Error(`流式音频播放失败: ${error.message}`);
+                return false;
             }
         }
         
-        // 使用Web Audio API播放
-        async function playWithWebAudioAPI(audioData) {
-            const audioContext = await initPlaybackAudioContext();
-            const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            
-            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            
-            const gainNode = audioContext.createGain();
-            gainNode.gain.value = 0.8;
-            
-            source.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            source.start(0);
-            
-            return new Promise((resolve) => {
-                source.onended = resolve;
-            });
-        }
-        
-        // 使用Audio元素播放
-        async function playWithAudioElement(audioData, mimeType) {
-            const audioBlob = new Blob([audioData], { type: mimeType });
-            const audioUrl = URL.createObjectURL(audioBlob);
-            const audio = new Audio();
-            
-            // 设置音频属性
-            audio.volume = 1.0; // 提高音量
-            audio.preload = 'auto';
-            audio.crossOrigin = 'anonymous';
-            
-            return new Promise((resolve, reject) => {
-                let resolved = false;
-                
-                const cleanup = () => {
-                    if (!resolved) {
-                        resolved = true;
-                        URL.revokeObjectURL(audioUrl);
-                        audio.removeEventListener('ended', onEnded);
-                        audio.removeEventListener('error', onError);
-                        audio.removeEventListener('canplaythrough', onCanPlay);
-                        audio.removeEventListener('loadeddata', onLoadedData);
-                    }
-                };
-                
-                const onEnded = () => {
-                    cleanup();
-                    resolve();
-                };
-                
-                const onError = (e) => {
-                    cleanup();
-                    const errorMsg = e.target?.error?.message || e.message || 'Unknown error';
-                    reject(new Error(`Audio playback failed: ${errorMsg}`));
-                };
-                
-                const onCanPlay = () => {
-                    console.log(`音频可以播放: ${mimeType}, ${audioData.length} 字节`);
-                };
-                
-                const onLoadedData = () => {
-                    console.log(`音频数据已加载: ${mimeType}`);
-                };
-                
-                // 添加事件监听器
-                audio.addEventListener('ended', onEnded);
-                audio.addEventListener('error', onError);
-                audio.addEventListener('canplaythrough', onCanPlay);
-                audio.addEventListener('loadeddata', onLoadedData);
-                
-                // 设置超时，防止永远不结束
-                setTimeout(() => {
-                    if (!resolved) {
-                        cleanup();
-                        resolve(); // 超时也算成功，避免阻塞
-                    }
-                }, 3000);
-                
-                // 设置音频源并播放
-                audio.src = audioUrl;
-                audio.play().catch(onError);
-            });
-        }
-        
-
-        
-
-        
-        // 清理所有音频流
-        function cleanupAllAudioStreams() {
-            // 清理所有定时器
-            audioPlaybackTimers.forEach(timer => clearTimeout(timer));
-            audioPlaybackTimers.clear();
-            
-            // 清理所有缓冲区和状态
-            audioStreamBuffer.clear();
-            audioPlaybackQueue.clear();
-            isProcessingAudio.clear();
-            
-            console.log('已清理所有音频流');
-        }
-        
-
-        
-        // 使用音频流播放
-        async function playAudioStream(audioData) {
+        // 智能Web Audio播放
+        async function tryWebAudioPlaySmart(audioData) {
             try {
-                // 创建一个临时的audio元素用于播放
+                const audioContext = await initPlaybackAudioContext();
+                const audioBuffer = await audioContext.decodeAudioData(audioData.buffer.slice());
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                const gainNode = audioContext.createGain();
+                gainNode.gain.value = 0.7;
+                
+                source.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                source.start(0);
+                
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // 更新智能播放状态显示
+        function updateSmartPlaybackStatus() {
+            if (!smartPlaybackStatusEl) return;
+            
+            let totalSuccess = 0;
+            let totalAttempts = 0;
+            let activeUsers = 0;
+            let usersWithHeaders = 0;
+            
+            // 统计所有用户的播放情况
+            playbackStats.forEach((stats, userId) => {
+                if (stats.total > 0) {
+                    totalSuccess += stats.success;
+                    totalAttempts += stats.total;
+                    activeUsers++;
+                    
+                    if (headerChunks.has(userId)) {
+                        usersWithHeaders++;
+                    }
+                }
+            });
+            
+            if (totalAttempts > 0) {
+                const overallSuccessRate = ((totalSuccess / totalAttempts) * 100).toFixed(1);
+                let statusText = `🧠 智能播放: ${overallSuccessRate}% 成功率`;
+                
+                if (activeUsers > 1) {
+                    statusText += ` (${activeUsers} 用户)`;
+                }
+                
+                if (usersWithHeaders > 0) {
+                    statusText += ` | ${usersWithHeaders} 头信息`;
+                }
+                
+                smartPlaybackStatusEl.textContent = statusText;
+                smartPlaybackStatusEl.style.display = 'block';
+                
+                // 根据成功率设置颜色
+                if (overallSuccessRate >= 70) {
+                    smartPlaybackStatusEl.style.color = '#4ec9b0'; // 绿色
+                } else if (overallSuccessRate >= 40) {
+                    smartPlaybackStatusEl.style.color = '#ffa500'; // 橙色
+                } else {
+                    smartPlaybackStatusEl.style.color = '#ff6b6b'; // 红色
+                }
+            } else {
+                smartPlaybackStatusEl.style.display = 'none';
+            }
+        }
+        
+        // 清理智能播放数据
+        function clearSmartPlaybackData() {
+            headerChunks.clear();
+            playbackStats.clear();
+            audioStreamBuffer.clear();
+            updateSmartPlaybackStatus();
+            console.log('🧠 智能播放数据已清理');
+        }
+        
+        // 方法1: Web Audio API 直接播放
+        async function tryWebAudioDirectPlay(audioData) {
+            try {
+                const audioContext = await initPlaybackAudioContext();
+                
+                // 尝试直接解码音频数据
+                const audioBuffer = await audioContext.decodeAudioData(audioData.buffer.slice());
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                
+                const gainNode = audioContext.createGain();
+                gainNode.gain.value = 0.8;
+                
+                source.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                source.start(0);
+                
+                return true;
+            } catch (error) {
+                console.log('Web Audio API 直接播放失败:', error.message);
+                return false;
+            }
+        }
+        
+        // 方法2: WebM/Opus 格式播放 - 改进版
+        async function tryWebMOpusPlay(audioData) {
+            try {
                 const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
                 const audioUrl = URL.createObjectURL(audioBlob);
-                
-                // 创建新的Audio对象
                 const audio = new Audio();
+                
+                audio.src = audioUrl;
+                audio.volume = 0.8;
+                audio.preload = 'metadata'; // 改为metadata，减少加载时间
+                
+                return new Promise((resolve, reject) => {
+                    let resolved = false;
+                    
+                    const cleanup = () => {
+                        if (!resolved) {
+                            resolved = true;
+                            URL.revokeObjectURL(audioUrl);
+                            audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+                            audio.removeEventListener('canplay', onCanPlay);
+                            audio.removeEventListener('error', onError);
+                            audio.removeEventListener('ended', onEnded);
+                        }
+                    };
+                    
+                    const onLoadedMetadata = () => {
+                        // 如果能加载元数据，说明格式正确
+                        audio.play().then(() => {
+                            console.log('音频开始播放');
+                        }).catch(onError);
+                    };
+                    
+                    const onCanPlay = () => {
+                        if (!resolved) {
+                            cleanup();
+                            resolve(true);
+                        }
+                    };
+                    
+                    const onError = (e) => {
+                        cleanup();
+                        const errorMsg = e.target?.error?.message || e.message || 'Unknown audio error';
+                        reject(new Error(errorMsg));
+                    };
+                    
+                    const onEnded = () => {
+                        cleanup();
+                        resolve(true);
+                    };
+                    
+                    audio.addEventListener('loadedmetadata', onLoadedMetadata);
+                    audio.addEventListener('canplay', onCanPlay);
+                    audio.addEventListener('error', onError);
+                    audio.addEventListener('ended', onEnded);
+                    
+                    // 减少超时时间，快速失败
+                    setTimeout(() => {
+                        if (!resolved) {
+                            cleanup();
+                            reject(new Error('播放超时'));
+                        }
+                    }, 1500);
+                });
+                
+            } catch (error) {
+                console.log('WebM/Opus 播放失败:', error.message);
+                return false;
+            }
+        }
+        
+        // 方法3: MediaSource API 流式播放
+        async function tryMediaSourcePlay(audioData) {
+            try {
+                if (!window.MediaSource || !MediaSource.isTypeSupported('audio/webm;codecs=opus')) {
+                    return false;
+                }
+                
+                const mediaSource = new MediaSource();
+                const audio = new Audio();
+                audio.src = URL.createObjectURL(mediaSource);
+                
+                await new Promise((resolve, reject) => {
+                    mediaSource.addEventListener('sourceopen', () => {
+                        try {
+                            const sourceBuffer = mediaSource.addSourceBuffer('audio/webm;codecs=opus');
+                            sourceBuffer.appendBuffer(audioData);
+                            
+                            sourceBuffer.addEventListener('updateend', () => {
+                                if (mediaSource.readyState === 'open') {
+                                    mediaSource.endOfStream();
+                                }
+                                resolve();
+                            });
+                            
+                            sourceBuffer.addEventListener('error', reject);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    });
+                    
+                    mediaSource.addEventListener('error', reject);
+                    
+                    // 超时处理
+                    setTimeout(() => reject(new Error('MediaSource 超时')), 2000);
+                });
+                
+                audio.volume = 0.8;
+                await audio.play();
+                
+                return true;
+            } catch (error) {
+                console.log('MediaSource 播放失败:', error.message);
+                return false;
+            }
+        }
+        
+        // 简化的音频播放方法
+        async function playSimpleAudio(audioData) {
+            try {
+                // 直接尝试播放音频，不进行复杂的缓冲
+                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio();
+                
                 audio.src = audioUrl;
                 audio.volume = 0.8;
                 audio.preload = 'auto';
                 
-                // 设置播放完成后的清理
-                const cleanup = () => {
-                    URL.revokeObjectURL(audioUrl);
-                    audio.removeEventListener('ended', cleanup);
-                    audio.removeEventListener('error', cleanup);
-                };
+                // 简单的播放处理
+                const playPromise = audio.play();
                 
-                audio.addEventListener('ended', cleanup);
-                audio.addEventListener('error', cleanup);
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log('音频播放成功');
+                    }).catch(error => {
+                        console.log('音频播放失败:', error.message);
+                        // 播放失败时显示指示器
+                        showAudioReceiveIndicator();
+                    }).finally(() => {
+                        URL.revokeObjectURL(audioUrl);
+                    });
+                }
                 
-                // 尝试播放
-                await audio.play();
-                console.log('音频流播放成功');
-                
+                return true;
             } catch (error) {
-                console.error('音频流播放失败:', error);
-                // 显示音频接收指示器而不是播放
-                showAudioReceiveIndicator();
-                throw error;
+                console.log('简单音频播放失败:', error.message);
+                return false;
             }
         }
+        
+
+        
+
         
         // 显示音频接收指示器
         let audioIndicatorTimeout = null;
@@ -2775,6 +2939,48 @@
         
         // 页面加载完成后初始化
         document.addEventListener('DOMContentLoaded', init);
+        
+        // 添加快捷键支持 (Ctrl+Shift+S 显示智能播放统计)
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+                e.preventDefault();
+                showSmartPlaybackStats();
+            }
+        });
+        
+        // 显示详细的智能播放统计
+        function showSmartPlaybackStats() {
+            console.log('📊 智能播放详细统计:');
+            console.log('==================');
+            
+            if (playbackStats.size === 0) {
+                console.log('暂无播放数据');
+                return;
+            }
+            
+            let totalSuccess = 0;
+            let totalAttempts = 0;
+            
+            playbackStats.forEach((stats, userId) => {
+                const userName = getUserName(userId) || userId.slice(-8);
+                const successRate = stats.total > 0 ? ((stats.success / stats.total) * 100).toFixed(1) : 0;
+                const hasHeader = headerChunks.has(userId) ? '✅' : '❌';
+                
+                console.log(`用户 ${userName}:`);
+                console.log(`  成功率: ${successRate}% (${stats.success}/${stats.total})`);
+                console.log(`  头信息: ${hasHeader}`);
+                
+                totalSuccess += stats.success;
+                totalAttempts += stats.total;
+            });
+            
+            const overallRate = totalAttempts > 0 ? ((totalSuccess / totalAttempts) * 100).toFixed(1) : 0;
+            console.log('==================');
+            console.log(`总体成功率: ${overallRate}% (${totalSuccess}/${totalAttempts})`);
+            console.log(`活跃用户: ${playbackStats.size}`);
+            console.log(`头信息用户: ${headerChunks.size}`);
+            console.log('提示: 按 Ctrl+Shift+S 查看此统计');
+        }
         
         // 页面卸载时清理
         window.addEventListener('beforeunload', () => {

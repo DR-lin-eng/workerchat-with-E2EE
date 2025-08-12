@@ -583,10 +583,10 @@ export class ChatRoom {
             return;
         }
 
-        // 验证文件大小限制 (例如最大 500MB)
-        const maxFileSize = 500 * 1024 * 1024; // 500MB
-        if (message.metadata.fileSize > maxFileSize) {
-            this.sendError(webSocket, 'File too large');
+        // 实时文件传输无文件大小限制
+        // 只验证元数据的有效性
+        if (!message.metadata || !message.metadata.fileName || !message.metadata.fileSize) {
+            this.sendError(webSocket, 'Invalid file metadata');
             return;
         }
 
@@ -648,8 +648,8 @@ export class ChatRoom {
             return;
         }
 
-        // 验证分片大小
-        const maxChunkSize = 128 * 1024; // 128KB
+        // 验证单个分片大小限制为500MB
+        const maxChunkSize = 500 * 1024 * 1024; // 500MB
         if (message.chunkData.length > maxChunkSize) {
             this.sendError(webSocket, 'Chunk too large');
             return;

@@ -1,7 +1,7 @@
 // WebSocket 实时文件传输管理器
 export class FileTransferManager {
     private activeTransfers: Map<string, FileTransferSession> = new Map();
-    private chunkSize: number = 64 * 1024; // 64KB chunks
+    private chunkSize: number = 256 * 1024; // 256KB chunks (default)
     
     constructor(
         private websocket: WebSocket,
@@ -14,7 +14,8 @@ export class FileTransferManager {
     async initiateFileTransfer(targetUserId: string, file: File): Promise<string> {
         const transferId = this.generateTransferId();
         const fileHash = await this.calculateMD5(file);
-        const totalChunks = Math.ceil(file.size / this.chunkSize);
+        const optimalChunkSize = this.calculateOptimalChunkSize(file.size);
+        const totalChunks = Math.ceil(file.size / optimalChunkSize);
 
         // 创建传输会话
         const session = new FileTransferSession({
@@ -23,7 +24,7 @@ export class FileTransferManager {
             targetUserId,
             fileHash,
             totalChunks,
-            chunkSize: this.chunkSize,
+            chunkSize: optimalChunkSize,
             type: 'send'
         });
 
@@ -40,7 +41,7 @@ export class FileTransferManager {
                 fileType: file.type,
                 fileHash,
                 totalChunks,
-                chunkSize: this.chunkSize
+                chunkSize: optimalChunkSize
             }
         };
 
@@ -93,6 +94,7 @@ export class FileTransferManager {
                 senderId,
                 metadata,
                 type: 'receive',
+                chunkSize: metadata.chunkSize,
                 receivedChunks: new Map(),
                 expectedHash: metadata.fileHash
             });
@@ -124,6 +126,7 @@ export class FileTransferManager {
     // 开始发送文件
     private async startFileSending(session: FileTransferSession): Promise<void> {
         const file = session.file!;
+        const chunkSize = session.chunkSize || this.chunkSize;
         const reader = new FileReader();
         let chunkIndex = 0;
 
@@ -135,8 +138,8 @@ export class FileTransferManager {
                 return;
             }
 
-            const start = chunkIndex * this.chunkSize;
-            const end = Math.min(start + this.chunkSize, file.size);
+            const start = chunkIndex * chunkSize;
+            const end = Math.min(start + chunkSize, file.size);
             const chunk = file.slice(start, end);
 
             reader.onload = (e) => {
@@ -238,6 +241,27 @@ export class FileTransferManager {
         return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
+    // 计算最优分片大小 (单个分片最大500MB)
+    private calculateOptimalChunkSize(fileSize: number): number {
+        const maxChunkSize = 500 * 1024 * 1024; // 500MB 最大分片
+        
+        // 根据文件大小动态调整分片大小
+        if (fileSize < 10 * 1024 * 1024) { // < 10MB
+            return 64 * 1024; // 64KB
+        } else if (fileSize < 100 * 1024 * 1024) { // < 100MB
+            return 256 * 1024; // 256KB
+        } else if (fileSize < 1024 * 1024 * 1024) { // < 1GB
+            return 512 * 1024; // 512KB
+        } else if (fileSize < 10 * 1024 * 1024 * 1024) { // < 10GB
+            return 1024 * 1024; // 1MB
+        } else if (fileSize < 100 * 1024 * 1024 * 1024) { // < 100GB
+            return 10 * 1024 * 1024; // 10MB
+        } else { // >= 100GB
+            // 对于超大文件，使用最大允许的分片大小
+            return maxChunkSize; // 500MB
+        }
+    }
+
     // 生成传输 ID
     private generateTransferId(): string {
         return Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -288,6 +312,7 @@ class FileTransferSession {
     senderId?: string;
     metadata?: any;
     totalChunks?: number;
+    chunkSize?: number;
     receivedChunks?: Map<number, number[]>;
     expectedHash?: string;
 
@@ -299,6 +324,7 @@ class FileTransferSession {
         this.senderId = config.senderId;
         this.metadata = config.metadata;
         this.totalChunks = config.totalChunks;
+        this.chunkSize = config.chunkSize;
         this.receivedChunks = config.receivedChunks;
         this.expectedHash = config.expectedHash;
     }

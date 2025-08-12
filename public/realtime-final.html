@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>最终实时音频聊天</title>
+    <script src="https://unpkg.com/openpgp@6.2.0/dist/openpgp.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 20px;
+            height: 80vh;
+        }
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+        .messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 15px;
+            margin: 15px 0;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 12px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .message.system {
+            background: rgba(255, 193, 7, 0.3);
+            font-style: italic;
+        }
+        .message.success {
+            background: rgba(40, 167, 69, 0.3);
+        }
+        .message.error {
+            background: rgba(220, 53, 69, 0.3);
+        }
+        button {
+            padding: 12px 20px;
+            margin: 8px 5px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+        button:hover { 
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+        button:disabled { 
+            background: rgba(255, 255, 255, 0.1);
+            cursor: not-allowed;
+            transform: none;
+        }
+        button.recording { 
+            background: #dc3545;
+            animation: pulse 1.5s infinite;
+        }
+        button.connected {
+            background: #28a745;
+        }
+        @keyframes pulse { 
+            0%, 100% { opacity: 1; transform: scale(1); } 
+            50% { opacity: 0.8; transform: scale(1.05); } 
+        }
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            backdrop-filter: blur(5px);
+        }
+        input::placeholder, textarea::placeholder {
+            color: rgba(255, 255, 255, 0.7);
+        }
+        .status {
+            padding: 12px;
+            margin: 12px 0;
+            border-radius: 8px;
+            background: rgba(40, 167, 69, 0.3);
+            border: 1px solid rgba(40, 167, 69, 0.5);
+        }
+        .status.error { 
+            background: rgba(220, 53, 69, 0.3);
+            border-color: rgba(220, 53, 69, 0.5);
+        }
+        .status.warning { 
+            background: rgba(255, 193, 7, 0.3);
+            border-color: rgba(255, 193, 7, 0.5);
+        }
+        .audio-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(40, 167, 69, 0.9);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 25px;
+            font-size: 14px;
+            z-index: 1000;
+            display: none;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        .audio-indicator.show { 
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .smart-status {
+            background: rgba(0, 123, 255, 0.3);
+            border: 1px solid rgba(0, 123, 255, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-size: 12px;
+        }
+        .user-item {
+            padding: 10px;
+            margin: 8px 0;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .user-name {
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        .user-id {
+            font-size: 11px;
+            opacity: 0.7;
+            font-family: monospace;
+        }
+        h1, h2, h3 {
+            margin-bottom: 15px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <h1>🎯 最终实时音频聊天</h1>
+    <p style="opacity: 0.8; margin-bottom: 20px;">基于测试结果优化的智能音频播放解决方案</p>
+    
+    <div class="container">
+        <div class="panel">
+            <h3>👥 用户管理</h3>
+            <div class="status" id="connectionStatus">未连接</div>
+            <div id="userList"></div>
+            
+            <h3>🎤 智能音频</h3>
+            <button id="generateKeys">生成密钥</button>
+            <button id="startLiveVoice">开始实时语音</button>
+            
+            <div class="smart-status" id="smartStatus">
+                <div>🧠 智能播放状态</div>
+                <div>头信息块: 未检测</div>
+                <div>播放成功率: 0%</div>
+                <div>当前策略: 初始化</div>
+            </div>
+            
+            <div>
+                <label>房间ID:</label>
+                <input type="text" id="roomInput" placeholder="输入房间ID或留空自动生成">
+                <button id="connectBtn">连接房间</button>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h3>💬 消息区域</h3>
+            <div class="messages" id="messages"></div>
+            <textarea id="messageInput" placeholder="输入消息..." rows="3"></textarea>
+            <button id="sendMessage">发送消息</button>
+        </div>
+    </div>
+    
+    <div class="audio-indicator" id="audioIndicator">
+        <div style="width: 8px; height: 8px; background: #fff; border-radius: 50%; animation: pulse 1s infinite;"></div>
+        🔊 接收音频
+    </div>
+
+    <script>
+        // 全局变量
+        let websocket = null;
+        let privateKey = null;
+        let publicKey = null;
+        let userId = '';
+        let userName = '';
+        let roomId = '';
+        let users = new Map();
+        
+        // 音频相关
+        let mediaRecorder = null;
+        let audioStream = null;
+        let isRecording = false;
+        
+        // 智能音频播放
+        let userAudioBuffers = new Map();
+        let headerChunks = new Map(); // 存储每个用户的头信息块
+        let playbackStats = new Map(); // 播放统计
+        
+        // DOM元素
+        const connectionStatusEl = document.getElementById('connectionStatus');
+        const userListEl = document.getElementById('userList');
+        const messagesEl = document.getElementById('messages');
+        const messageInputEl = document.getElementById('messageInput');
+        const roomInputEl = document.getElementById('roomInput');
+        const connectBtnEl = document.getElementById('connectBtn');
+        const generateKeysBtn = document.getElementById('generateKeys');
+        const startLiveVoiceBtn = document.getElementById('startLiveVoice');
+        const sendMessageBtn = document.getElementById('sendMessage');
+        const audioIndicatorEl = document.getElementById('audioIndicator');
+        const smartStatusEl = document.getElementById('smartStatus');
+        
+        // 添加消息到界面
+        function addMessage(content, type = 'normal') {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+            messageEl.innerHTML = `<div style="font-size: 11px; opacity: 0.7; margin-bottom: 5px;">[${new Date().toLocaleTimeString()}]</div>${content}`;
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        
+        // 更新连接状态
+        function updateConnectionStatus(status, type = 'normal') {
+            connectionStatusEl.textContent = status;
+            connectionStatusEl.className = `status ${type}`;
+        }
+        
+        // 更新智能播放状态
+        function updateSmartStatus(userId) {
+            const stats = playbackStats.get(userId) || { success: 0, total: 0 };
+            const hasHeader = headerChunks.has(userId);
+            const successRate = stats.total > 0 ? ((stats.success / stats.total) * 100).toFixed(1) : 0;
+            
+            let strategy = '初始化';
+            if (hasHeader) {
+                strategy = '头信息合并';
+            } else if (stats.total > 0) {
+                strategy = '缓冲合并';
+            }
+            
+            smartStatusEl.innerHTML = `
+                <div>🧠 智能播放状态</div>
+                <div>头信息块: ${hasHeader ? '已检测' : '未检测'}</div>
+                <div>播放成功率: ${successRate}%</div>
+                <div>当前策略: ${strategy}</div>
+            `;
+        }
+        
+        // 生成密钥对
+        async function generateKeys() {
+            try {
+                addMessage('正在生成密钥对...', 'system');
+                
+                const { privateKey: privKey, publicKey: pubKey } = await openpgp.generateKey({
+                    type: 'ecc',
+                    curve: 'curve25519',
+                    userIDs: [{ name: `User_${Date.now()}`, email: `user${Date.now()}@example.com` }],
+                    passphrase: '',
+                    format: 'armored'
+                });
+                
+                privateKey = privKey;
+                publicKey = pubKey;
+                
+                const key = await openpgp.readKey({ armoredKey: publicKey });
+                const primaryUser = await key.getPrimaryUser();
+                userId = key.getFingerprint().toUpperCase();
+                userName = primaryUser.user.userID?.name || `User_${userId.slice(-8)}`;
+                
+                addMessage(`密钥生成成功，用户: ${userName}`, 'success');
+                generateKeysBtn.textContent = '✅ 密钥已生成';
+                generateKeysBtn.disabled = true;
+                
+            } catch (error) {
+                addMessage(`密钥生成失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 连接到房间
+        async function connectToRoom() {
+            if (!privateKey || !publicKey) {
+                addMessage('请先生成密钥', 'error');
+                return;
+            }
+            
+            try {
+                roomId = roomInputEl.value.trim();
+                if (!roomId) {
+                    const response = await fetch('/api/room', { method: 'POST' });
+                    roomId = await response.text();
+                    roomInputEl.value = roomId;
+                }
+                
+                const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/room/${roomId}/websocket`;
+                websocket = new WebSocket(wsUrl);
+                
+                websocket.onopen = () => {
+                    updateConnectionStatus('已连接', 'normal');
+                    addMessage('WebSocket连接成功', 'success');
+                    
+                    websocket.send(JSON.stringify({
+                        type: 'register',
+                        publicKey: publicKey
+                    }));
+                };
+                
+                websocket.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleMessage(message);
+                    } catch (error) {
+                        addMessage(`消息解析错误: ${error.message}`, 'error');
+                    }
+                };
+                
+                websocket.onclose = () => {
+                    updateConnectionStatus('连接断开', 'error');
+                    addMessage('WebSocket连接断开', 'error');
+                };
+                
+                connectBtnEl.textContent = '连接中...';
+                connectBtnEl.disabled = true;
+                
+            } catch (error) {
+                addMessage(`连接失败: ${error.message}`, 'error');
+                updateConnectionStatus('连接失败', 'error');
+            }
+        }
+        
+        // 处理接收到的消息
+        async function handleMessage(message) {
+            switch (message.type) {
+                case 'registered':
+                    addMessage(`注册成功: ${message.profile.name}`, 'success');
+                    connectBtnEl.textContent = '✅ 已连接';
+                    connectBtnEl.classList.add('connected');
+                    break;
+                    
+                case 'userList':
+                    updateUserList(message.users);
+                    break;
+                    
+                case 'liveAudioNotification':
+                    await handleSmartLiveAudio(message);
+                    break;
+                    
+                case 'encryptedMessage':
+                    await handleEncryptedMessage(message);
+                    break;
+                    
+                case 'error':
+                    addMessage(`错误: ${message.message}`, 'error');
+                    break;
+            }
+        }
+        
+        // 更新用户列表
+        function updateUserList(userList) {
+            users.clear();
+            userListEl.innerHTML = '';
+            
+            userList.forEach(user => {
+                users.set(user.id, user);
+                const userEl = document.createElement('div');
+                userEl.className = 'user-item';
+                userEl.innerHTML = `
+                    <div class="user-name">${user.name}</div>
+                    <div class="user-id">${user.id.slice(-12)}</div>
+                `;
+                if (user.id === userId) {
+                    userEl.style.background = 'rgba(0, 123, 255, 0.3)';
+                }
+                userListEl.appendChild(userEl);
+            });
+            
+            addMessage(`在线用户: ${userList.length}`, 'system');
+        }
+        
+        // 智能实时音频处理
+        async function handleSmartLiveAudio(message) {
+            if (!privateKey) return;
+            
+            try {
+                const decryptedMessage = await openpgp.decrypt({
+                    message: await openpgp.readMessage({ armoredMessage: message.encryptedAudioData }),
+                    decryptionKeys: await openpgp.readPrivateKey({ armoredKey: privateKey })
+                });
+                
+                const audioData = new Uint8Array(decryptedMessage.data);
+                console.log(`接收音频: ${audioData.length} 字节 from ${message.senderId}`);
+                
+                // 智能播放处理
+                await smartAudioPlayback(message.senderId, audioData);
+                showAudioIndicator();
+                
+            } catch (error) {
+                console.error('处理实时音频失败:', error);
+                showAudioIndicator();
+            }
+        }
+        
+        // 智能音频播放核心逻辑
+        async function smartAudioPlayback(senderId, audioData) {
+            // 初始化用户数据
+            if (!userAudioBuffers.has(senderId)) {
+                userAudioBuffers.set(senderId, {
+                    chunks: [],
+                    totalSize: 0,
+                    lastUpdate: Date.now(),
+                    isProcessing: false
+                });
+                playbackStats.set(senderId, { success: 0, total: 0 });
+            }
+            
+            const buffer = userAudioBuffers.get(senderId);
+            const stats = playbackStats.get(senderId);
+            
+            buffer.chunks.push(audioData);
+            buffer.totalSize += audioData.length;
+            buffer.lastUpdate = Date.now();
+            stats.total++;
+            
+            console.log(`缓冲音频 [${senderId.slice(-8)}]: ${audioData.length} 字节，总计: ${buffer.totalSize} 字节`);
+            
+            // 如果不在处理中，开始智能播放
+            if (!buffer.isProcessing) {
+                buffer.isProcessing = true;
+                await processSmartAudioBuffer(senderId);
+            }
+        }
+        
+        // 处理智能音频缓冲区
+        async function processSmartAudioBuffer(senderId) {
+            const buffer = userAudioBuffers.get(senderId);
+            const stats = playbackStats.get(senderId);
+            
+            if (!buffer || buffer.chunks.length === 0) {
+                if (buffer) buffer.isProcessing = false;
+                return;
+            }
+            
+            try {
+                let playSuccess = false;
+                
+                // 策略1: 如果有头信息块，与头信息块合并播放
+                if (headerChunks.has(senderId) && buffer.chunks.length > 0) {
+                    const headerChunk = headerChunks.get(senderId);
+                    const currentChunk = buffer.chunks.shift();
+                    buffer.totalSize -= currentChunk.length;
+                    
+                    const mergedAudio = new Uint8Array(headerChunk.length + currentChunk.length);
+                    mergedAudio.set(headerChunk, 0);
+                    mergedAudio.set(currentChunk, headerChunk.length);
+                    
+                    if (await tryPlayAudio(mergedAudio)) {
+                        console.log(`智能播放成功 [${senderId.slice(-8)}]: 头信息合并`);
+                        stats.success++;
+                        playSuccess = true;
+                    }
+                }
+                
+                // 策略2: 测试第一个块是否包含头信息
+                if (!playSuccess && !headerChunks.has(senderId) && buffer.chunks.length > 0) {
+                    const firstChunk = buffer.chunks[0];
+                    
+                    if (await tryPlayAudio(firstChunk)) {
+                        console.log(`发现头信息块 [${senderId.slice(-8)}]: ${firstChunk.length} 字节`);
+                        headerChunks.set(senderId, firstChunk);
+                        buffer.chunks.shift();
+                        buffer.totalSize -= firstChunk.length;
+                        stats.success++;
+                        playSuccess = true;
+                    }
+                }
+                
+                // 策略3: 缓冲合并播放
+                if (!playSuccess && buffer.chunks.length >= 2) {
+                    const chunksToMerge = buffer.chunks.splice(0, 2);
+                    const mergedSize = chunksToMerge.reduce((sum, chunk) => sum + chunk.length, 0);
+                    buffer.totalSize -= mergedSize;
+                    
+                    const mergedAudio = new Uint8Array(mergedSize);
+                    let offset = 0;
+                    for (const chunk of chunksToMerge) {
+                        mergedAudio.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    
+                    if (await tryPlayAudio(mergedAudio)) {
+                        console.log(`智能播放成功 [${senderId.slice(-8)}]: 缓冲合并`);
+                        stats.success++;
+                        playSuccess = true;
+                    }
+                }
+                
+                // 策略4: 单块播放（最后尝试）
+                if (!playSuccess && buffer.chunks.length > 0) {
+                    const singleChunk = buffer.chunks.shift();
+                    buffer.totalSize -= singleChunk.length;
+                    
+                    if (await tryPlayAudio(singleChunk)) {
+                        console.log(`智能播放成功 [${senderId.slice(-8)}]: 单块播放`);
+                        stats.success++;
+                        playSuccess = true;
+                    }
+                }
+                
+                if (!playSuccess) {
+                    console.log(`智能播放失败 [${senderId.slice(-8)}]`);
+                }
+                
+                // 更新状态显示
+                updateSmartStatus(senderId);
+                
+                // 继续处理剩余数据
+                if (buffer.chunks.length > 0) {
+                    setTimeout(() => processSmartAudioBuffer(senderId), 50);
+                } else {
+                    buffer.isProcessing = false;
+                }
+                
+            } catch (error) {
+                console.error('智能音频处理失败:', error);
+                buffer.isProcessing = false;
+            }
+        }
+        
+        // 尝试播放音频
+        async function tryPlayAudio(audioData) {
+            // 方法1: 直接播放
+            if (await tryDirectPlay(audioData)) {
+                return true;
+            }
+            
+            // 方法2: Web Audio API
+            if (await tryWebAudioPlay(audioData)) {
+                return true;
+            }
+            
+            return false;
+        }
+        
+        // 直接播放
+        async function tryDirectPlay(audioData) {
+            try {
+                const audioBlob = new Blob([audioData], { type: 'audio/webm;codecs=opus' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio();
+                
+                audio.src = audioUrl;
+                audio.volume = 0.7;
+                
+                return new Promise((resolve) => {
+                    let resolved = false;
+                    
+                    const cleanup = () => {
+                        if (!resolved) {
+                            resolved = true;
+                            URL.revokeObjectURL(audioUrl);
+                        }
+                    };
+                    
+                    audio.oncanplaythrough = () => {
+                        audio.play().then(() => {
+                            cleanup();
+                            resolve(true);
+                        }).catch(() => {
+                            cleanup();
+                            resolve(false);
+                        });
+                    };
+                    
+                    audio.onerror = () => {
+                        cleanup();
+                        resolve(false);
+                    };
+                    
+                    setTimeout(() => {
+                        cleanup();
+                        resolve(false);
+                    }, 500);
+                });
+                
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // Web Audio API 播放
+        async function tryWebAudioPlay(audioData) {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const audioBuffer = await audioContext.decodeAudioData(audioData.buffer.slice());
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                const gainNode = audioContext.createGain();
+                gainNode.gain.value = 0.7;
+                
+                source.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                source.start(0);
+                
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // 显示音频指示器
+        function showAudioIndicator() {
+            audioIndicatorEl.classList.add('show');
+            setTimeout(() => {
+                audioIndicatorEl.classList.remove('show');
+            }, 1500);
+        }
+        
+        // 开始/停止实时语音
+        async function toggleLiveVoice() {
+            if (!isRecording) {
+                await startLiveVoice();
+            } else {
+                stopLiveVoice();
+            }
+        }
+        
+        // 开始实时语音
+        async function startLiveVoice() {
+            try {
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }
+                });
+                
+                mediaRecorder = new MediaRecorder(audioStream, {
+                    mimeType: 'audio/webm;codecs=opus',
+                    audioBitsPerSecond: 32000
+                });
+                
+                mediaRecorder.ondataavailable = async (event) => {
+                    if (event.data.size > 0 && websocket && websocket.readyState === WebSocket.OPEN) {
+                        await sendAudioChunk(event.data);
+                    }
+                };
+                
+                mediaRecorder.start(200);
+                isRecording = true;
+                
+                startLiveVoiceBtn.textContent = '🔴 停止语音';
+                startLiveVoiceBtn.classList.add('recording');
+                addMessage('🎤 实时语音已开启', 'success');
+                
+            } catch (error) {
+                addMessage(`启动实时语音失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 停止实时语音
+        function stopLiveVoice() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            isRecording = false;
+            startLiveVoiceBtn.textContent = '🎤 开始实时语音';
+            startLiveVoiceBtn.classList.remove('recording');
+            addMessage('实时语音已停止', 'system');
+        }
+        
+        // 发送音频块
+        async function sendAudioChunk(audioBlob) {
+            try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioData = new Uint8Array(arrayBuffer);
+                
+                const encryptedData = await encryptForAllUsers(audioData);
+                
+                const message = {
+                    type: 'liveAudio',
+                    encryptedAudioData: encryptedData,
+                    timestamp: Date.now()
+                };
+                
+                websocket.send(JSON.stringify(message));
+                
+            } catch (error) {
+                console.error('发送音频失败:', error);
+            }
+        }
+        
+        // 为所有用户加密数据
+        async function encryptForAllUsers(data) {
+            const publicKeys = Array.from(users.values()).map(user => user.publicKey);
+            
+            if (publicKeys.length === 0) {
+                return '';
+            }
+            
+            const keys = await Promise.all(
+                publicKeys.map(key => openpgp.readKey({ armoredKey: key }))
+            );
+            
+            const encrypted = await openpgp.encrypt({
+                message: await openpgp.createMessage({ binary: data }),
+                encryptionKeys: keys,
+                format: 'armored'
+            });
+            
+            return encrypted;
+        }
+        
+        // 处理加密消息
+        async function handleEncryptedMessage(message) {
+            try {
+                const decryptedMessage = await openpgp.decrypt({
+                    message: await openpgp.readMessage({ armoredMessage: message.encryptedData }),
+                    decryptionKeys: await openpgp.readPrivateKey({ armoredKey: privateKey })
+                });
+                
+                const senderName = users.get(message.senderId)?.name || message.senderId.slice(-8);
+                addMessage(`${senderName}: ${decryptedMessage.data}`);
+                
+            } catch (error) {
+                addMessage(`解密消息失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 发送文本消息
+        async function sendTextMessage() {
+            const text = messageInputEl.value.trim();
+            if (!text || !websocket || websocket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            try {
+                const encryptedData = await encryptForAllUsers(new TextEncoder().encode(text));
+                
+                const message = {
+                    type: 'message',
+                    encryptedData: encryptedData
+                };
+                
+                websocket.send(JSON.stringify(message));
+                messageInputEl.value = '';
+                addMessage(`我: ${text}`);
+                
+            } catch (error) {
+                addMessage(`发送消息失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 事件监听器
+        generateKeysBtn.addEventListener('click', generateKeys);
+        connectBtnEl.addEventListener('click', connectToRoom);
+        startLiveVoiceBtn.addEventListener('click', toggleLiveVoice);
+        sendMessageBtn.addEventListener('click', sendTextMessage);
+        
+        messageInputEl.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendTextMessage();
+            }
+        });
+        
+        // 初始化
+        addMessage('🎯 最终实时音频聊天已加载', 'success');
+        addMessage('✨ 集成智能音频播放策略', 'system');
+        addMessage('请先生成密钥，然后连接到房间', 'system');
+        updateSmartStatus('default');
+    </script>
+</body>
+</html>

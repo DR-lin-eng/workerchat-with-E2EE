@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能音频播放器</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; }
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .panel { background: #f8f9fa; padding: 20px; border-radius: 8px; border: 1px solid #dee2e6; }
+        .log { background: #fff; border: 1px solid #ddd; padding: 10px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; margin: 10px 0; }
+        button { padding: 8px 16px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        button.recording { background: #dc3545; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        .stats { background: #e9ecef; padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+        .warning { color: #ffc107; }
+        .strategy { background: #d1ecf1; padding: 10px; margin: 10px 0; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>🧠 智能音频播放器</h1>
+    <p>基于测试结果的智能音频流播放解决方案</p>
+    
+    <div class="container">
+        <div class="panel">
+            <h3>🎤 录制与播放</h3>
+            <button id="startRecord">开始录制</button>
+            <button id="stopRecord" disabled>停止录制</button>
+            <button id="testSmart">测试智能播放</button>
+            <button id="clearAll">清空所有</button>
+            
+            <div class="stats" id="stats">
+                <div>录制状态: 未开始</div>
+                <div>音频块数: 0</div>
+                <div>智能播放成功: 0</div>
+                <div>播放失败: 0</div>
+            </div>
+            
+            <div class="strategy">
+                <h4>🎯 智能播放策略</h4>
+                <div>✅ 优先播放包含头信息的块</div>
+                <div>✅ 智能合并相邻音频块</div>
+                <div>✅ 动态调整合并策略</div>
+                <div>✅ 缓存成功的播放模式</div>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h3>📊 播放分析</h3>
+            <div class="log" id="analysisLog"></div>
+        </div>
+    </div>
+    
+    <div class="panel">
+        <h3>📝 详细日志</h3>
+        <button onclick="clearLog()">清空日志</button>
+        <div class="log" id="debugLog"></div>
+    </div>
+
+    <script>
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let smartPlaySuccessCount = 0;
+        let playFailCount = 0;
+        let headerChunkIndex = -1; // 记录包含头信息的块索引
+        let successfulPatterns = []; // 记录成功的播放模式
+        
+        const startRecordBtn = document.getElementById('startRecord');
+        const stopRecordBtn = document.getElementById('stopRecord');
+        const testSmartBtn = document.getElementById('testSmart');
+        const clearAllBtn = document.getElementById('clearAll');
+        const statsEl = document.getElementById('stats');
+        const debugLogEl = document.getElementById('debugLog');
+        const analysisLogEl = document.getElementById('analysisLog');
+        
+        // 日志函数
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> <span class="${type}">${message}</span>`;
+            debugLogEl.appendChild(logEntry);
+            debugLogEl.scrollTop = debugLogEl.scrollHeight;
+            console.log(message);
+        }
+        
+        function analysisLog(message, type = 'info') {
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span class="${type}">${message}</span>`;
+            analysisLogEl.appendChild(logEntry);
+            analysisLogEl.scrollTop = analysisLogEl.scrollHeight;
+        }
+        
+        function clearLog() {
+            debugLogEl.innerHTML = '';
+            analysisLogEl.innerHTML = '';
+        }
+        
+        // 更新统计信息
+        function updateStats() {
+            statsEl.innerHTML = `
+                <div>录制状态: ${isRecording ? '录制中' : '已停止'}</div>
+                <div>音频块数: ${audioChunks.length}</div>
+                <div>智能播放成功: <span class="success">${smartPlaySuccessCount}</span></div>
+                <div>播放失败: <span class="error">${playFailCount}</span></div>
+            `;
+        }
+        
+        // 开始录制
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }
+                });
+                
+                const supportedFormat = 'audio/webm;codecs=opus';
+                
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: supportedFormat,
+                    audioBitsPerSecond: 32000
+                });
+                
+                audioChunks = [];
+                smartPlaySuccessCount = 0;
+                playFailCount = 0;
+                headerChunkIndex = -1;
+                successfulPatterns = [];
+                
+                mediaRecorder.ondataavailable = async (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                        const index = audioChunks.length - 1;
+                        
+                        log(`录制音频块 ${index + 1}: ${event.data.size} 字节`);
+                        
+                        // 智能播放测试
+                        await smartPlayTest(event.data, index);
+                        
+                        updateStats();
+                    }
+                };
+                
+                mediaRecorder.start(200);
+                isRecording = true;
+                
+                startRecordBtn.disabled = true;
+                stopRecordBtn.disabled = false;
+                
+                log('开始智能录制测试', 'success');
+                analysisLog('🧠 智能播放分析开始', 'success');
+                
+            } catch (error) {
+                log(`录制失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 停止录制
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+            
+            isRecording = false;
+            startRecordBtn.disabled = false;
+            stopRecordBtn.disabled = true;
+            
+            log('停止录制', 'warning');
+            analysisLog('📊 录制完成，开始分析结果', 'warning');
+            analyzeResults();
+        }
+        
+        // 智能播放测试
+        async function smartPlayTest(audioBlob, index) {
+            // 策略1: 测试单独播放（检测是否包含头信息）
+            if (await testSinglePlay(audioBlob)) {
+                log(`块 ${index + 1} 单独播放成功 - 可能包含头信息`, 'success');
+                analysisLog(`✅ 块 ${index + 1}: 包含头信息，可独立播放`, 'success');
+                headerChunkIndex = index;
+                smartPlaySuccessCount++;
+                return;
+            }
+            
+            // 策略2: 如果有头信息块，尝试与头信息块合并
+            if (headerChunkIndex >= 0 && index > headerChunkIndex) {
+                const headerChunk = audioChunks[headerChunkIndex];
+                const mergedBlob = new Blob([headerChunk, audioBlob], { type: audioBlob.type });
+                
+                if (await testSinglePlay(mergedBlob)) {
+                    log(`块 ${index + 1} 与头信息块合并播放成功`, 'success');
+                    analysisLog(`✅ 块 ${index + 1}: 与头信息块合并成功`, 'success');
+                    successfulPatterns.push({ type: 'header_merge', headerIndex: headerChunkIndex, dataIndex: index });
+                    smartPlaySuccessCount++;
+                    return;
+                }
+            }
+            
+            // 策略3: 与前一个块合并
+            if (index > 0) {
+                const prevChunk = audioChunks[index - 1];
+                const mergedBlob = new Blob([prevChunk, audioBlob], { type: audioBlob.type });
+                
+                if (await testSinglePlay(mergedBlob)) {
+                    log(`块 ${index + 1} 与前一块合并播放成功`, 'success');
+                    analysisLog(`✅ 块 ${index + 1}: 与前一块合并成功`, 'success');
+                    successfulPatterns.push({ type: 'sequential_merge', index1: index - 1, index2: index });
+                    smartPlaySuccessCount++;
+                    return;
+                }
+            }
+            
+            // 策略4: 与多个前面的块合并
+            if (index >= 2) {
+                const chunks = audioChunks.slice(Math.max(0, index - 2), index + 1);
+                const mergedBlob = new Blob(chunks, { type: audioBlob.type });
+                
+                if (await testSinglePlay(mergedBlob)) {
+                    log(`块 ${index + 1} 多块合并播放成功`, 'success');
+                    analysisLog(`✅ 块 ${index + 1}: 多块合并成功`, 'success');
+                    successfulPatterns.push({ type: 'multi_merge', startIndex: Math.max(0, index - 2), endIndex: index });
+                    smartPlaySuccessCount++;
+                    return;
+                }
+            }
+            
+            // 所有策略都失败
+            log(`块 ${index + 1} 所有智能播放策略都失败`, 'error');
+            analysisLog(`❌ 块 ${index + 1}: 无法播放`, 'error');
+            playFailCount++;
+        }
+        
+        // 测试单独播放
+        async function testSinglePlay(audioBlob) {
+            try {
+                // 优先使用直接播放（更快）
+                if (await tryDirectPlay(audioBlob)) {
+                    return true;
+                }
+                
+                // 备用Web Audio API
+                if (await tryWebAudioPlay(audioBlob)) {
+                    return true;
+                }
+                
+                return false;
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // 直接播放测试
+        async function tryDirectPlay(audioBlob) {
+            try {
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio();
+                audio.src = audioUrl;
+                audio.volume = 0.1; // 低音量测试
+                
+                return new Promise((resolve) => {
+                    let resolved = false;
+                    
+                    const cleanup = () => {
+                        if (!resolved) {
+                            resolved = true;
+                            URL.revokeObjectURL(audioUrl);
+                        }
+                    };
+                    
+                    audio.oncanplaythrough = () => {
+                        audio.play().then(() => {
+                            cleanup();
+                            resolve(true);
+                        }).catch(() => {
+                            cleanup();
+                            resolve(false);
+                        });
+                    };
+                    
+                    audio.onerror = () => {
+                        cleanup();
+                        resolve(false);
+                    };
+                    
+                    // 快速超时
+                    setTimeout(() => {
+                        cleanup();
+                        resolve(false);
+                    }, 300);
+                });
+                
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // Web Audio API 测试
+        async function tryWebAudioPlay(audioBlob) {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                const gainNode = audioContext.createGain();
+                gainNode.gain.value = 0.1; // 低音量
+                
+                source.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                source.start(0);
+                
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // 分析结果
+        function analyzeResults() {
+            analysisLog('', '');
+            analysisLog('📈 智能播放分析结果:', 'warning');
+            analysisLog(`总音频块数: ${audioChunks.length}`, 'info');
+            analysisLog(`成功播放: ${smartPlaySuccessCount}`, 'success');
+            analysisLog(`播放失败: ${playFailCount}`, 'error');
+            analysisLog(`成功率: ${((smartPlaySuccessCount / audioChunks.length) * 100).toFixed(1)}%`, 'info');
+            
+            if (headerChunkIndex >= 0) {
+                analysisLog(`🎯 发现头信息块: 第 ${headerChunkIndex + 1} 块`, 'success');
+            } else {
+                analysisLog(`⚠️ 未发现独立可播放的头信息块`, 'warning');
+            }
+            
+            analysisLog('', '');
+            analysisLog('🔍 成功播放模式分析:', 'info');
+            const patternCounts = {};
+            successfulPatterns.forEach(pattern => {
+                patternCounts[pattern.type] = (patternCounts[pattern.type] || 0) + 1;
+            });
+            
+            Object.entries(patternCounts).forEach(([type, count]) => {
+                const typeNames = {
+                    'header_merge': '与头信息块合并',
+                    'sequential_merge': '与前一块合并',
+                    'multi_merge': '多块合并'
+                };
+                analysisLog(`${typeNames[type] || type}: ${count} 次`, 'success');
+            });
+            
+            // 推荐策略
+            analysisLog('', '');
+            analysisLog('💡 推荐的实时播放策略:', 'warning');
+            if (headerChunkIndex >= 0) {
+                analysisLog('1. 缓存第一个成功播放的块作为头信息', 'info');
+                analysisLog('2. 后续块与头信息块合并播放', 'info');
+            } else {
+                analysisLog('1. 缓冲2-3个音频块后合并播放', 'info');
+                analysisLog('2. 使用滑动窗口策略', 'info');
+            }
+            analysisLog('3. 优先使用直接播放方法', 'info');
+            analysisLog('4. 播放失败时显示接收指示器', 'info');
+        }
+        
+        // 测试智能播放
+        async function testSmartPlayback() {
+            if (audioChunks.length === 0) {
+                log('没有音频块可测试', 'warning');
+                return;
+            }
+            
+            log('开始测试智能播放策略', 'warning');
+            
+            // 重置计数器
+            smartPlaySuccessCount = 0;
+            playFailCount = 0;
+            
+            // 重新测试所有块
+            for (let i = 0; i < audioChunks.length; i++) {
+                await smartPlayTest(audioChunks[i], i);
+                await new Promise(resolve => setTimeout(resolve, 100)); // 短暂延迟
+            }
+            
+            updateStats();
+            analyzeResults();
+        }
+        
+        // 清空所有
+        function clearAll() {
+            audioChunks = [];
+            smartPlaySuccessCount = 0;
+            playFailCount = 0;
+            headerChunkIndex = -1;
+            successfulPatterns = [];
+            updateStats();
+            clearLog();
+            log('已清空所有数据', 'warning');
+        }
+        
+        // 事件监听器
+        startRecordBtn.addEventListener('click', startRecording);
+        stopRecordBtn.addEventListener('click', stopRecording);
+        testSmartBtn.addEventListener('click', testSmartPlayback);
+        clearAllBtn.addEventListener('click', clearAll);
+        
+        // 初始化
+        updateStats();
+        log('智能音频播放器已加载', 'success');
+        analysisLog('🚀 准备开始智能播放测试', 'info');
+    </script>
+</body>
+</html>
