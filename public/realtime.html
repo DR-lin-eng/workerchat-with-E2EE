@@ -722,7 +722,7 @@
         let maxRetryCount = 5;
         let retryDelay = 1000; // 1秒
         let connectionCheckInterval = null;
-        
+
         // 带宽监控和并发控制
         let bandwidthMonitor = {
             startTime: 0,
@@ -732,15 +732,9 @@
             speedHistory: [],
             maxHistorySize: 10
         };
-        
-        // 动态并发控制
-        let concurrencyController = {
-            currentConcurrency: 8,
-            minConcurrency: 2,
-            maxConcurrency: 20,
-            lastAdjustTime: 0,
-            adjustInterval: 5000 // 5秒调整一次
-        };
+
+        // 固定30并发配置
+        const FIXED_CONCURRENCY = 30;
 
         // 全局安全WebSocket发送函数
         function safeSendMessage(message, errorMessage = '发送消息失败') {
@@ -748,12 +742,12 @@
                 try {
                     const messageStr = JSON.stringify(message);
                     const messageSize = new Blob([messageStr]).size;
-                    
+
                     // 检查消息大小
                     if (messageSize > 10 * 1024) { // 10KB警告阈值
                         console.warn(`WebSocket消息较大: ${messageSize} 字节`);
                     }
-                    
+
                     websocket.send(messageStr);
                     return true;
                 } catch (error) {
@@ -829,11 +823,11 @@
                 connectionCheckInterval = null;
             }
         }
-        
+
         // 恢复暂停的文件传输
         function resumePausedTransfers() {
             let resumedCount = 0;
-            
+
             for (const [transferId, transfer] of activeTransfers) {
                 if (transfer.status === 'paused' && transfer.type === 'send' && transfer.resumeTransfer) {
                     console.log(`恢复传输: ${transfer.file.name} (${transfer.sentChunks}/${transfer.totalChunks})`);
@@ -841,16 +835,16 @@
                     resumedCount++;
                 }
             }
-            
+
             if (resumedCount > 0) {
                 showNotification(`已恢复 ${resumedCount} 个暂停的文件传输`, 'info');
             }
         }
-        
+
         // 暂停所有活跃的文件传输
         function pauseActiveTransfers() {
             let pausedCount = 0;
-            
+
             for (const [transferId, transfer] of activeTransfers) {
                 if (transfer.status === 'sending' && transfer.type === 'send' && transfer.stopTransfer) {
                     console.log(`暂停传输: ${transfer.file.name}`);
@@ -859,7 +853,7 @@
                     pausedCount++;
                 }
             }
-            
+
             if (pausedCount > 0) {
                 console.log(`已暂停 ${pausedCount} 个活跃的文件传输`);
             }
@@ -939,19 +933,19 @@
                     try {
                         const messageStr = JSON.stringify(message);
                         const messageSize = new Blob([messageStr]).size;
-                        
+
                         // 检查消息大小并记录
                         if (messageSize > 10 * 1024) { // 10KB警告阈值
                             console.warn(`WebSocket消息较大: ${messageSize} 字节, 类型: ${message.type}`);
                         }
-                        
+
                         // 如果消息过大，拒绝发送
                         if (messageSize > 12 * 1024) { // 12KB硬限制
                             console.error(`WebSocket消息过大: ${messageSize} 字节，超过12KB限制`);
                             displaySystemMessage(`${errorMessage}: 消息过大 (${messageSize} 字节)`, 'error');
                             return false;
                         }
-                        
+
                         this.websocket.send(messageStr);
                         return true;
                     } catch (error) {
@@ -972,7 +966,7 @@
                 // 测试显示2KB数据产生约7.28KB消息，1KB数据产生约3.71KB消息
                 // 为了安全起见，使用更小的分片大小
                 const maxSafeChunkSize = 2 * 1024; // 2KB 安全分片大小
-                
+
                 // 根据文件大小调整分片大小，但不超过安全限制
                 if (fileSize < 1024 * 1024) { // < 1MB
                     return 1 * 1024; // 1KB
@@ -1137,19 +1131,19 @@
                 transfer.status = 'sending';
                 transfer.isActive = true;
                 transfer.sentChunks = startChunkIndex;
-                
+
                 // 并发传输配置
                 const maxConcurrentChunks = this.calculateConcurrency(transfer.totalChunks);
                 const sendQueue = new Set(); // 正在发送的分片索引
                 const completedChunks = new Set(); // 已完成的分片索引
                 let nextChunkIndex = startChunkIndex;
-                
-                console.log(`开始并发传输: ${file.name}, 并发数: ${maxConcurrentChunks}`);
+
+                console.log(`开始并发传输: ${file.name}, 总分片: ${transfer.totalChunks}, 并发数: ${maxConcurrentChunks}`);
 
                 // 并发发送分片
                 const sendChunksConcurrently = async () => {
                     const promises = [];
-                    
+
                     // 启动多个并发传输线程
                     for (let i = 0; i < maxConcurrentChunks; i++) {
                         promises.push(this.sendChunkWorker(transfer, transferId, {
@@ -1174,12 +1168,15 @@
                             }
                         }));
                     }
-                    
+
                     // 等待所有并发传输完成
                     await Promise.allSettled(promises);
-                    
+
                     // 检查传输是否完成
                     if (completedChunks.size + startChunkIndex >= transfer.totalChunks && isTransferActive) {
+                        const totalTime = ((Date.now() - bandwidthMonitor.startTime) / 1000).toFixed(1);
+                        console.log(`传输完成: ${file.name}, 总用时: ${totalTime}s, 并发数: 30`);
+
                         transfer.status = 'completed';
                         transfer.progress = 100;
                         transfer.isActive = false;
@@ -1203,7 +1200,7 @@
                         transfer.status = 'sending';
                         this.updateTransferStatus();
                         displaySystemMessage(`继续传输文件: ${file.name}`, 'info');
-                        
+
                         // 重新计算下一个分片索引
                         nextChunkIndex = transfer.sentChunks || startChunkIndex;
                         sendChunksConcurrently();
@@ -1213,125 +1210,76 @@
                 // 开始并发传输
                 sendChunksConcurrently();
             }
-            
-            // 计算并发数 (动态调整)
+
+            // 计算并发数 (固定30并发)
             calculateConcurrency(totalChunks) {
-                // 基础并发数
-                let baseConcurrency;
-                if (totalChunks < 100) {
-                    baseConcurrency = Math.min(4, totalChunks);
-                } else if (totalChunks < 1000) {
-                    baseConcurrency = 8;
-                } else if (totalChunks < 10000) {
-                    baseConcurrency = 12;
-                } else {
-                    baseConcurrency = 16;
-                }
-                
-                // 根据当前网络速度调整
-                const currentSpeed = bandwidthMonitor.currentSpeed;
-                let speedMultiplier = 1;
-                
-                if (currentSpeed > 500) { // > 500 KB/s
-                    speedMultiplier = 1.5;
-                } else if (currentSpeed > 200) { // > 200 KB/s
-                    speedMultiplier = 1.2;
-                } else if (currentSpeed < 50) { // < 50 KB/s
-                    speedMultiplier = 0.7;
-                }
-                
-                const adjustedConcurrency = Math.round(baseConcurrency * speedMultiplier);
-                return Math.max(concurrencyController.minConcurrency, 
-                               Math.min(concurrencyController.maxConcurrency, adjustedConcurrency));
+                // 固定使用30并发以获得最佳传输速度
+                return 30;
             }
-            
+
             // 更新带宽监控
             updateBandwidthMonitor(bytesTransferred) {
                 const now = Date.now();
-                
+
                 if (bandwidthMonitor.startTime === 0) {
                     bandwidthMonitor.startTime = now;
                     bandwidthMonitor.lastSpeedCheck = now;
                 }
-                
+
                 bandwidthMonitor.totalBytes += bytesTransferred;
-                
+
                 // 每秒计算一次速度
                 if (now - bandwidthMonitor.lastSpeedCheck >= 1000) {
                     const timeDiff = (now - bandwidthMonitor.lastSpeedCheck) / 1000;
                     const bytesDiff = bytesTransferred;
                     const speed = (bytesDiff / timeDiff) / 1024; // KB/s
-                    
+
                     bandwidthMonitor.currentSpeed = speed;
                     bandwidthMonitor.speedHistory.push(speed);
-                    
+
                     // 保持历史记录大小
                     if (bandwidthMonitor.speedHistory.length > bandwidthMonitor.maxHistorySize) {
                         bandwidthMonitor.speedHistory.shift();
                     }
-                    
+
                     bandwidthMonitor.lastSpeedCheck = now;
-                    
+
                     // 更新UI显示
                     this.updateSpeedDisplay(speed);
                 }
             }
-            
+
             // 更新速度显示
             updateSpeedDisplay(speed) {
                 const speedEl = document.getElementById('transferSpeed');
                 if (speedEl) {
                     speedEl.textContent = `${speed.toFixed(1)} KB/s`;
                 }
-                
+
                 // 在控制台显示详细信息
                 if (speed > 0) {
-                    console.log(`传输速度: ${speed.toFixed(1)} KB/s, 并发数: ${concurrencyController.currentConcurrency}`);
+                    console.log(`传输速度: ${speed.toFixed(1)} KB/s, 并发数: 30`);
                 }
             }
-            
-            // 动态调整并发数
+
+            // 动态调整并发数 (已禁用，使用固定30并发)
             adjustConcurrencyDynamically() {
-                const now = Date.now();
-                if (now - concurrencyController.lastAdjustTime < concurrencyController.adjustInterval) {
-                    return; // 还没到调整时间
-                }
-                
-                const avgSpeed = this.getAverageSpeed();
-                const oldConcurrency = concurrencyController.currentConcurrency;
-                
-                // 根据平均速度调整并发数
-                if (avgSpeed > 300) { // 高速网络
-                    concurrencyController.currentConcurrency = Math.min(
-                        concurrencyController.maxConcurrency,
-                        concurrencyController.currentConcurrency + 2
-                    );
-                } else if (avgSpeed < 100) { // 低速网络
-                    concurrencyController.currentConcurrency = Math.max(
-                        concurrencyController.minConcurrency,
-                        concurrencyController.currentConcurrency - 1
-                    );
-                }
-                
-                if (oldConcurrency !== concurrencyController.currentConcurrency) {
-                    console.log(`并发数调整: ${oldConcurrency} → ${concurrencyController.currentConcurrency} (速度: ${avgSpeed.toFixed(1)} KB/s)`);
-                }
-                
-                concurrencyController.lastAdjustTime = now;
+                // 不再动态调整，使用固定30并发
+                return;
             }
-            
+
             // 获取平均速度
             getAverageSpeed() {
                 if (bandwidthMonitor.speedHistory.length === 0) return 0;
-                
+
                 const sum = bandwidthMonitor.speedHistory.reduce((a, b) => a + b, 0);
                 return sum / bandwidthMonitor.speedHistory.length;
             }
-            
+
             // 计算传输延迟
             calculateDelay() {
                 const avgSpeed = this.getAverageSpeed();
-                
+
                 // 根据网络速度调整延迟
                 if (avgSpeed > 500) {
                     return 5; // 高速网络，最小延迟
@@ -1343,7 +1291,7 @@
                     return 50; // 很慢的网络，增加延迟避免拥塞
                 }
             }
-            
+
             // 重置带宽监控
             resetBandwidthMonitor() {
                 bandwidthMonitor.startTime = 0;
@@ -1352,29 +1300,29 @@
                 bandwidthMonitor.currentSpeed = 0;
                 bandwidthMonitor.speedHistory = [];
             }
-            
+
             // 并发传输工作线程
             async sendChunkWorker(transfer, transferId, config) {
                 const file = transfer.file;
-                
+
                 while (config.isActive()) {
                     const chunkIndex = config.getNextChunkIndex();
                     if (chunkIndex === null) break; // 没有更多分片
-                    
+
                     try {
                         // 检查WebSocket连接状态
                         if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
                             config.onError('WebSocket连接断开');
                             break;
                         }
-                        
+
                         // 读取分片数据
                         const start = chunkIndex * transfer.chunkSize;
                         const end = Math.min(start + transfer.chunkSize, file.size);
                         const chunk = file.slice(start, end);
-                        
+
                         const chunkData = await this.readChunkAsArray(chunk);
-                        
+
                         const chunkMessage = {
                             type: 'realtimeFileChunk',
                             transferId: transferId,
@@ -1389,21 +1337,20 @@
                             config.onError('WebSocket发送失败');
                             break;
                         }
-                        
+
                         // 更新带宽监控
                         this.updateBandwidthMonitor(chunkData.length);
-                        
+
                         config.onChunkSent(chunkIndex);
-                        
-                        // 动态调整并发数
-                        this.adjustConcurrencyDynamically();
-                        
+
+                        // 不再动态调整并发数，使用固定30并发
+
                         // 根据网络速度调整延迟
                         const delay = this.calculateDelay();
                         if (delay > 0) {
                             await new Promise(resolve => setTimeout(resolve, delay));
                         }
-                        
+
                     } catch (error) {
                         console.error(`分片 ${chunkIndex} 发送失败:`, error);
                         config.onError(error.message);
@@ -1411,7 +1358,7 @@
                     }
                 }
             }
-            
+
             // 异步读取分片数据
             readChunkAsArray(chunk) {
                 return new Promise((resolve, reject) => {
@@ -1564,7 +1511,7 @@
                     transfer.sentChunks = 0;
                     transfer.progress = 0;
                     transfer.error = null;
-                    
+
                     // 重新发起传输请求
                     const transferRequest = {
                         type: 'fileTransferRequest',
@@ -1621,11 +1568,11 @@
                     if (transfer.sentChunks) {
                         statusInfo += ` (${transfer.sentChunks}/${transfer.totalChunks})`;
                     }
-                    
+
                     // 添加速度和并发信息
                     if (transfer.status === 'sending' && bandwidthMonitor.currentSpeed > 0) {
                         statusInfo += ` - ${bandwidthMonitor.currentSpeed.toFixed(1)} KB/s`;
-                        statusInfo += ` - 并发: ${concurrencyController.currentConcurrency}`;
+                        statusInfo += ` - 并发: 30`;
                     }
 
                     transferEl.innerHTML = `
