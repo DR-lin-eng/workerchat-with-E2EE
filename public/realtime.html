@@ -776,19 +776,41 @@
             handleTransferRequest(message) {
                 const { transferId, senderId, metadata } = message;
                 
+                console.log('Handling transfer request:', transferId, 'from:', senderId);
+                
                 // 临时存储 metadata，用于后续创建接收会话
                 this.pendingTransfers = this.pendingTransfers || new Map();
+                
+                // 检查是否已经存在相同的传输请求
+                if (this.pendingTransfers.has(transferId)) {
+                    console.warn('Transfer request already exists:', transferId);
+                    return;
+                }
+                
                 this.pendingTransfers.set(transferId, { senderId, metadata });
+                console.log('Stored pending transfer:', transferId);
                 
                 // 显示接收请求
                 displayFileTransferRequest(senderId, transferId, metadata);
             }
             
             acceptTransfer(transferId, senderId) {
+                console.log('Accepting transfer:', transferId, 'from:', senderId);
+                
                 // 获取待处理的传输信息
                 const pendingTransfer = this.pendingTransfers?.get(transferId);
                 if (!pendingTransfer) {
                     console.error('Pending transfer not found:', transferId);
+                    console.log('Available pending transfers:', Array.from(this.pendingTransfers?.keys() || []));
+                    console.log('Active transfers:', Array.from(activeTransfers.keys()));
+                    displaySystemMessage(`错误: 找不到传输请求 ${transferId}`);
+                    return;
+                }
+
+                // 检查是否已经在处理这个传输
+                if (activeTransfers.has(transferId)) {
+                    console.warn('Transfer already active:', transferId);
+                    displaySystemMessage(`传输 ${transferId} 已经在进行中`);
                     return;
                 }
 
@@ -814,9 +836,10 @@
                 
                 // 清理待处理的传输信息
                 this.pendingTransfers.delete(transferId);
+                console.log('Cleaned up pending transfer:', transferId);
                 
                 this.updateTransferStatus();
-                displaySystemMessage(`已接受来自 ${getUserName(senderId)} 的文件传输`);
+                displaySystemMessage(`已接受来自 ${getUserName(senderId)} 的文件: ${pendingTransfer.metadata.fileName}`);
             }
             
             rejectTransfer(transferId, senderId) {
@@ -1447,6 +1470,36 @@
             document.body.appendChild(overlay);
         }
         
+        function handleTransferAction(transferId, senderId, action, buttonElement) {
+            // 防止重复点击
+            if (buttonElement.disabled) {
+                return;
+            }
+            
+            // 禁用所有相关按钮
+            const parentDiv = buttonElement.parentElement;
+            const buttons = parentDiv.querySelectorAll('button');
+            buttons.forEach(btn => {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+            });
+            
+            try {
+                if (action === 'accept') {
+                    fileTransferManager.acceptTransfer(transferId, senderId);
+                } else if (action === 'reject') {
+                    fileTransferManager.rejectTransfer(transferId, senderId);
+                }
+            } catch (error) {
+                console.error('Error handling transfer action:', error);
+                // 重新启用按钮
+                buttons.forEach(btn => {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                });
+            }
+        }
+
         function displayFileTransferRequest(senderId, transferId, metadata) {
             const messageEl = document.createElement('div');
             messageEl.className = 'message system';
@@ -1463,10 +1516,10 @@
                         <div class="file-hash">MD5: ${metadata.fileHash.substring(0, 16)}...</div>
                     </div>
                     <div>
-                        <button class="download-btn" onclick="fileTransferManager.acceptTransfer('${transferId}', '${senderId}')">
+                        <button class="download-btn" onclick="handleTransferAction('${transferId}', '${senderId}', 'accept', this)">
                             接受
                         </button>
-                        <button class="cancel-btn" onclick="fileTransferManager.rejectTransfer('${transferId}', '${senderId}')">
+                        <button class="cancel-btn" onclick="handleTransferAction('${transferId}', '${senderId}', 'reject', this)">
                             拒绝
                         </button>
                     </div>
