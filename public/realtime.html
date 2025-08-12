@@ -438,13 +438,50 @@
         }
         
         .live-voice-controls {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 15px;
+            border-radius: 12px;
+            z-index: 1000;
+            min-width: 300px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        
+        .voice-control-panel {
             display: flex;
-            gap: 10px;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .voice-status {
+            display: flex;
             align-items: center;
-            padding: 10px;
-            background: rgba(255, 165, 0, 0.2);
-            border-radius: 8px;
-            margin: 10px 0;
+            gap: 10px;
+            font-weight: bold;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            padding-bottom: 8px;
+        }
+        
+        .volume-section, .settings-section, .status-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .volume-section label, .settings-section label {
+            min-width: 80px;
+            font-size: 0.8em;
+            color: #ccc;
+        }
+        
+        .status-section {
+            justify-content: space-between;
+            font-size: 0.8em;
+            color: #aaa;
         }
         
         .live-voice-indicator {
@@ -654,6 +691,92 @@
         let fileTransferManager = null;
         let activeTransfers = new Map(); // transferId -> transfer info
         
+        // WebSocket连接状态监控
+        let connectionRetryCount = 0;
+        let maxRetryCount = 5;
+        let retryDelay = 1000; // 1秒
+        let connectionCheckInterval = null;
+        
+        // 全局安全WebSocket发送函数
+        function safeSendMessage(message, errorMessage = '发送消息失败') {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                try {
+                    websocket.send(JSON.stringify(message));
+                    return true;
+                } catch (error) {
+                    console.error('WebSocket发送错误:', error);
+                    showNotification(`${errorMessage}: ${error.message}`, 'error');
+                    return false;
+                }
+            } else {
+                console.error('WebSocket连接不可用，状态:', getWebSocketStateText());
+                showNotification(`${errorMessage}: 连接断开`, 'error');
+                
+                // 尝试重连
+                if (connectionRetryCount < maxRetryCount) {
+                    attemptReconnection();
+                }
+                return false;
+            }
+        }
+        
+        // 获取WebSocket状态文本
+        function getWebSocketStateText() {
+            if (!websocket) return 'null';
+            switch (websocket.readyState) {
+                case WebSocket.CONNECTING: return 'CONNECTING';
+                case WebSocket.OPEN: return 'OPEN';
+                case WebSocket.CLOSING: return 'CLOSING';
+                case WebSocket.CLOSED: return 'CLOSED';
+                default: return 'UNKNOWN';
+            }
+        }
+        
+        // 尝试重连
+        function attemptReconnection() {
+            if (connectionRetryCount >= maxRetryCount) {
+                showNotification('连接失败，已达到最大重试次数', 'error');
+                return;
+            }
+            
+            connectionRetryCount++;
+            const delay = retryDelay * connectionRetryCount;
+            
+            showNotification(`连接断开，${delay/1000}秒后尝试重连 (${connectionRetryCount}/${maxRetryCount})`, 'warning');
+            
+            setTimeout(() => {
+                console.log(`尝试重连 ${connectionRetryCount}/${maxRetryCount}`);
+                connectWebSocket();
+            }, delay);
+        }
+        
+        // 重置重连计数
+        function resetConnectionRetry() {
+            connectionRetryCount = 0;
+        }
+        
+        // 开始连接状态监控
+        function startConnectionMonitoring() {
+            if (connectionCheckInterval) {
+                clearInterval(connectionCheckInterval);
+            }
+            
+            connectionCheckInterval = setInterval(() => {
+                if (websocket && websocket.readyState === WebSocket.CLOSED) {
+                    console.log('检测到WebSocket连接断开，尝试重连');
+                    attemptReconnection();
+                }
+            }, 5000); // 每5秒检查一次
+        }
+        
+        // 停止连接状态监控
+        function stopConnectionMonitoring() {
+            if (connectionCheckInterval) {
+                clearInterval(connectionCheckInterval);
+                connectionCheckInterval = null;
+            }
+        }
+        
         // 语音录制相关
         let mediaRecorder = null;
         let audioChunks = [];
@@ -667,6 +790,15 @@
         let isLiveVoiceActive = false;
         let volumeMeter = null;
         let liveVoiceInterval = null;
+        
+        // 优化的音频处理
+        let audioBuffer = [];
+        let lastSendTime = 0;
+        let silenceThreshold = 0.01; // 静音检测阈值
+        let volumeAnalyser = null;
+        let audioWorkletNode = null;
+        let sendInterval = 500; // 发送间隔 (ms)
+        let minBufferSize = 3; // 最小缓冲区大小
         
         // 音频播放相关
         let playbackAudioContext = null;
@@ -711,6 +843,24 @@
             constructor(websocket) {
                 this.websocket = websocket;
                 this.pendingTransfers = new Map(); // 存储待处理的传输请求
+            }
+            
+            // 安全的WebSocket发送方法
+            safeSend(message, errorMessage = '发送消息失败') {
+                if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    try {
+                        this.websocket.send(JSON.stringify(message));
+                        return true;
+                    } catch (error) {
+                        console.error('WebSocket发送错误:', error);
+                        displaySystemMessage(`${errorMessage}: ${error.message}`, 'error');
+                        return false;
+                    }
+                } else {
+                    console.error('WebSocket连接不可用，状态:', this.websocket?.readyState);
+                    displaySystemMessage(`${errorMessage}: 连接断开`, 'error');
+                    return false;
+                }
             }
             
             // 计算最优分片大小 (单个分片最大500MB)
@@ -766,7 +916,7 @@
                     }
                 };
 
-                this.websocket.send(JSON.stringify(transferRequest));
+                this.safeSend(transferRequest, '发送传输请求失败');
                 this.updateTransferStatus();
                 
                 displaySystemMessage(`正在请求向 ${getUserName(targetUserId)} 发送文件: ${file.name}`);
@@ -822,7 +972,9 @@
                     accepted: true
                 };
 
-                this.websocket.send(JSON.stringify(response));
+                if (!this.safeSend(response, '发送接受响应失败')) {
+                    return;
+                }
                 
                 // 创建接收会话，包含 metadata
                 activeTransfers.set(transferId, {
@@ -850,7 +1002,7 @@
                     accepted: false
                 };
 
-                this.websocket.send(JSON.stringify(response));
+                this.safeSend(response, '发送拒绝响应失败');
                 
                 // 清理待处理的传输信息
                 if (this.pendingTransfers) {
@@ -908,7 +1060,14 @@
                                 isLast: chunkIndex === transfer.totalChunks - 1
                             };
 
-                            this.websocket.send(JSON.stringify(chunkMessage));
+                            // 安全发送文件分片
+                            if (!this.safeSend(chunkMessage, '发送文件分片失败')) {
+                                transfer.status = 'failed';
+                                transfer.error = 'WebSocket连接断开';
+                                this.updateTransferStatus();
+                                displaySystemMessage(`文件传输失败: 连接断开`, 'error');
+                                return;
+                            }
                             
                             chunkIndex++;
                             transfer.progress = (chunkIndex / transfer.totalChunks) * 100;
@@ -1018,7 +1177,8 @@
                     targetUserId: transfer.targetUserId || transfer.senderId
                 };
 
-                this.websocket.send(JSON.stringify(cancelMessage));
+                this.safeSend(cancelMessage, '发送取消消息失败');
+                
                 activeTransfers.delete(transferId);
                 this.updateTransferStatus();
                 
@@ -1190,33 +1350,52 @@
                 connectionStatusEl.textContent = '已连接';
                 connectionStatusEl.className = 'connection-status status-connected';
                 
+                // 重置重连计数
+                resetConnectionRetry();
+                
+                // 开始连接监控
+                startConnectionMonitoring();
+                
                 // 初始化文件传输管理器
                 fileTransferManager = new FileTransferManager(websocket);
                 
                 if (publicKey) {
                     registerUser();
                 }
+                
+                showNotification('连接已建立', 'success');
             };
             
             websocket.onmessage = (event) => {
-                const message = JSON.parse(event.data);
-                handleWebSocketMessage(message);
+                try {
+                    const message = JSON.parse(event.data);
+                    handleWebSocketMessage(message);
+                } catch (error) {
+                    console.error('解析WebSocket消息失败:', error);
+                }
             };
             
-            websocket.onclose = () => {
+            websocket.onclose = (event) => {
                 connectionStatusEl.textContent = '连接断开';
                 connectionStatusEl.className = 'connection-status status-disconnected';
+                
+                // 停止连接监控
+                stopConnectionMonitoring();
                 
                 // 清理智能播放数据
                 clearSmartPlaybackData();
                 
-                // 尝试重连
-                setTimeout(connectWebSocket, 3000);
+                console.log('WebSocket连接关闭:', event.code, event.reason);
+                
+                // 如果不是主动关闭，尝试重连
+                if (event.code !== 1000) { // 1000 = 正常关闭
+                    attemptReconnection();
+                }
             };
             
             websocket.onerror = (error) => {
                 console.error('WebSocket error:', error);
-                showNotification('连接错误', 'error');
+                showNotification('连接错误: ' + (error.message || '未知错误'), 'error');
             };
         }
         
@@ -2132,29 +2311,38 @@
         
         async function startLiveVoice() {
             try {
+                // 优化的音频约束
                 liveAudioStream = await navigator.mediaDevices.getUserMedia({ 
                     audio: {
                         echoCancellation: true,
                         noiseSuppression: true,
                         autoGainControl: true,
-                        sampleRate: 16000
+                        sampleRate: 48000, // 提高采样率以获得更好的音质
+                        channelCount: 1,   // 单声道减少数据量
+                        latency: 0.01      // 低延迟设置
                     } 
                 });
                 
-                liveAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                // 创建音频上下文
+                liveAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 48000,
+                    latencyHint: 'interactive'
+                });
+                
                 const source = liveAudioContext.createMediaStreamSource(liveAudioStream);
                 
-                // 创建音量检测器
-                const analyser = liveAudioContext.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
+                // 创建音量分析器
+                volumeAnalyser = liveAudioContext.createAnalyser();
+                volumeAnalyser.fftSize = 512;
+                volumeAnalyser.smoothingTimeConstant = 0.3;
+                source.connect(volumeAnalyser);
                 
-                // 创建媒体录制器用于实时传输，优化设置
+                // 创建优化的媒体录制器
                 const supportedMimeTypes = [
                     'audio/webm;codecs=opus',
                     'audio/webm',
                     'audio/ogg;codecs=opus',
-                    'audio/ogg'
+                    'audio/mp4'
                 ];
                 
                 let selectedMimeType = null;
@@ -2170,12 +2358,12 @@
                     throw new Error('浏览器不支持任何音频录制格式');
                 }
                 
+                // 优化的录制器配置
                 const recorderOptions = {
                     mimeType: selectedMimeType,
-                    audioBitsPerSecond: 64000 // 64kbps，平衡音质和传输速度
+                    audioBitsPerSecond: 96000 // 提高码率以获得更好的音质
                 };
                 
-                // 如果浏览器不支持指定码率，使用默认设置
                 try {
                     liveMediaRecorder = new MediaRecorder(liveAudioStream, recorderOptions);
                 } catch (error) {
@@ -2185,11 +2373,15 @@
                     });
                 }
                 
+                // 优化的数据处理
                 liveMediaRecorder.ondataavailable = async (event) => {
                     if (event.data.size > 0) {
-                        console.log(`录制音频块: ${event.data.size} 字节, 类型: ${event.data.type}`);
-                        // 立即发送每个音频块，减少延迟
-                        await sendLiveAudioChunk(event.data);
+                        // 添加到缓冲区而不是立即发送
+                        audioBuffer.push(event.data);
+                        console.log(`音频块缓冲: ${event.data.size} 字节, 缓冲区大小: ${audioBuffer.length}`);
+                        
+                        // 检查是否需要发送缓冲的音频
+                        await processAudioBuffer();
                     }
                 };
                 
@@ -2198,8 +2390,8 @@
                     showNotification('录制错误: ' + event.error.message, 'error');
                 };
                 
-                // 开始录制，每200ms产生一个数据块，平衡延迟和数据完整性
-                liveMediaRecorder.start(200);
+                // 使用更长的录制间隔以减少网络请求频率
+                liveMediaRecorder.start(sendInterval);
                 
                 isLiveVoiceActive = true;
                 liveVoiceBtnEl.textContent = '📞 停止实时语音';
@@ -2208,10 +2400,13 @@
                 // 显示实时语音控制界面
                 showLiveVoiceControls();
                 
-                // 开始音量监测
-                startVolumeMonitoring(analyser);
+                // 开始优化的音量监测
+                startOptimizedVolumeMonitoring();
                 
-                showNotification('实时语音已开启');
+                // 启动定期发送机制
+                startPeriodicSend();
+                
+                showNotification('实时语音已开启 (优化模式)');
                 
             } catch (error) {
                 console.error('启动实时语音失败:', error);
@@ -2220,6 +2415,13 @@
         }
         
         function stopLiveVoice() {
+            // 发送剩余的缓冲音频
+            if (audioBuffer.length > 0) {
+                const finalBlob = new Blob(audioBuffer, { type: audioBuffer[0].type });
+                sendLiveAudioChunk(finalBlob).catch(console.error);
+                audioBuffer = [];
+            }
+            
             if (liveAudioStream) {
                 liveAudioStream.getTracks().forEach(track => track.stop());
                 liveAudioStream = null;
@@ -2240,8 +2442,14 @@
                 liveVoiceInterval = null;
             }
             
+            // 清理优化相关的变量
+            volumeAnalyser = null;
+            audioBuffer = [];
+            lastSendTime = 0;
+            
             isLiveVoiceActive = false;
             liveVoiceBtnEl.textContent = '📞 实时语音';
+            liveVoiceBtnEl.style.background = '';
             
             // 清理所有音频流
             cleanupAllAudioStreams();
@@ -2264,6 +2472,124 @@
             hideLiveVoiceControls();
             
             showNotification('实时语音已关闭');
+        }
+        
+        // 优化的音频缓冲处理
+        async function processAudioBuffer() {
+            const currentTime = Date.now();
+            
+            // 检查是否有足够的音频数据或者距离上次发送时间足够长
+            if (audioBuffer.length >= minBufferSize || (currentTime - lastSendTime) > sendInterval * 2) {
+                // 检测音量以决定是否发送
+                const hasAudio = await detectAudioActivity();
+                
+                if (hasAudio && audioBuffer.length > 0) {
+                    // 合并缓冲区中的音频数据
+                    const combinedBlob = new Blob(audioBuffer, { type: audioBuffer[0].type });
+                    console.log(`发送合并音频: ${combinedBlob.size} 字节, 包含 ${audioBuffer.length} 个块`);
+                    
+                    // 发送合并的音频数据
+                    await sendLiveAudioChunk(combinedBlob);
+                    
+                    // 清空缓冲区
+                    audioBuffer = [];
+                    lastSendTime = currentTime;
+                } else if (!hasAudio) {
+                    // 如果检测到静音，清空缓冲区但不发送
+                    console.log('检测到静音，跳过发送');
+                    audioBuffer = [];
+                    lastSendTime = currentTime;
+                }
+            }
+        }
+        
+        // 音频活动检测
+        async function detectAudioActivity() {
+            if (!volumeAnalyser) return true; // 如果没有分析器，默认发送
+            
+            const bufferLength = volumeAnalyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            volumeAnalyser.getByteFrequencyData(dataArray);
+            
+            // 计算平均音量
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / bufferLength / 255; // 归一化到 0-1
+            
+            // 检查是否超过静音阈值
+            const hasActivity = average > silenceThreshold;
+            
+            if (hasActivity) {
+                console.log(`音频活动检测: ${(average * 100).toFixed(1)}% (阈值: ${(silenceThreshold * 100).toFixed(1)}%)`);
+            }
+            
+            return hasActivity;
+        }
+        
+        // 优化的音量监测
+        function startOptimizedVolumeMonitoring() {
+            if (!volumeAnalyser) return;
+            
+            const bufferLength = volumeAnalyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            function updateVolume() {
+                if (!isLiveVoiceActive) return;
+                
+                volumeAnalyser.getByteFrequencyData(dataArray);
+                
+                let sum = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / bufferLength;
+                const volume = Math.min(100, (average / 255) * 100);
+                
+                // 更新UI显示
+                updateVolumeDisplay(volume);
+                
+                requestAnimationFrame(updateVolume);
+            }
+            
+            updateVolume();
+        }
+        
+        // 定期发送机制
+        function startPeriodicSend() {
+            liveVoiceInterval = setInterval(async () => {
+                if (isLiveVoiceActive && audioBuffer.length > 0) {
+                    await processAudioBuffer();
+                }
+            }, sendInterval);
+        }
+        
+        // 更新音量显示
+        function updateVolumeDisplay(volume) {
+            const volumeBar = document.getElementById('volumeBar');
+            const volumeText = document.getElementById('volumeText');
+            const audioStatus = document.getElementById('audioStatus');
+            const bufferStatus = document.getElementById('bufferStatus');
+            
+            if (volumeBar) {
+                volumeBar.style.width = `${volume}%`;
+                volumeBar.style.backgroundColor = volume > silenceThreshold * 100 ? '#4CAF50' : '#ccc';
+            }
+            
+            if (volumeText) {
+                volumeText.textContent = `${volume.toFixed(1)}%`;
+            }
+            
+            if (audioStatus) {
+                const isActive = volume > silenceThreshold * 100;
+                audioStatus.textContent = `状态: ${isActive ? '活跃' : '静音'}`;
+                audioStatus.style.color = isActive ? '#4CAF50' : '#999';
+            }
+            
+            if (bufferStatus) {
+                bufferStatus.textContent = `缓冲: ${audioBuffer.length}`;
+            }
         }
         
         async function sendLiveAudioChunk(audioBlob) {
@@ -2304,20 +2630,92 @@
         }
         
         function showLiveVoiceControls() {
-            const controlsEl = document.createElement('div');
-            controlsEl.id = 'liveVoiceControls';
-            controlsEl.className = 'live-voice-controls';
-            controlsEl.innerHTML = `
-                <div class="live-voice-indicator" id="liveVoiceIndicator"></div>
-                <span>实时语音通话中</span>
-                <div class="volume-meter">
-                    <div class="volume-bar" id="volumeBar"></div>
-                </div>
-            `;
+            let controlsEl = document.getElementById('liveVoiceControls');
+            if (!controlsEl) {
+                controlsEl = document.createElement('div');
+                controlsEl.id = 'liveVoiceControls';
+                controlsEl.className = 'live-voice-controls';
+                controlsEl.innerHTML = `
+                    <div class="voice-control-panel">
+                        <div class="voice-status">
+                            <div class="live-voice-indicator" id="liveVoiceIndicator"></div>
+                            <span>实时语音通话中 (优化模式)</span>
+                        </div>
+                        <div class="volume-section">
+                            <label>音量监测:</label>
+                            <div class="volume-meter">
+                                <div id="volumeBar" class="volume-bar"></div>
+                            </div>
+                            <span id="volumeText">0%</span>
+                        </div>
+                        <div class="settings-section">
+                            <label>静音阈值:</label>
+                            <input type="range" id="silenceSlider" min="0" max="0.1" step="0.005" value="${silenceThreshold}">
+                            <span id="silenceText">${(silenceThreshold * 100).toFixed(1)}%</span>
+                        </div>
+                        <div class="settings-section">
+                            <label>发送间隔:</label>
+                            <select id="intervalSelect">
+                                <option value="300" ${sendInterval === 300 ? 'selected' : ''}>300ms (高质量)</option>
+                                <option value="500" ${sendInterval === 500 ? 'selected' : ''}>500ms (平衡)</option>
+                                <option value="1000" ${sendInterval === 1000 ? 'selected' : ''}>1000ms (省流量)</option>
+                            </select>
+                        </div>
+                        <div class="status-section">
+                            <span id="audioStatus">状态: 正常</span>
+                            <span id="bufferStatus">缓冲: 0</span>
+                        </div>
+                    </div>
+                `;
+                
+                // 插入到输入区域上方
+                const inputArea = document.querySelector('.input-area');
+                inputArea.parentNode.insertBefore(controlsEl, inputArea);
+            }
             
-            // 插入到输入区域上方
-            const inputArea = document.querySelector('.input-area');
-            inputArea.parentNode.insertBefore(controlsEl, inputArea);
+            // 绑定控制事件
+            bindVoiceControlEvents();
+            controlsEl.style.display = 'block';
+        }
+        
+        function bindVoiceControlEvents() {
+            const silenceSlider = document.getElementById('silenceSlider');
+            const silenceText = document.getElementById('silenceText');
+            const intervalSelect = document.getElementById('intervalSelect');
+            
+            if (silenceSlider) {
+                silenceSlider.addEventListener('input', (e) => {
+                    silenceThreshold = parseFloat(e.target.value);
+                    silenceText.textContent = `${(silenceThreshold * 100).toFixed(1)}%`;
+                    console.log('静音阈值更新:', silenceThreshold);
+                });
+            }
+            
+            if (intervalSelect) {
+                intervalSelect.addEventListener('change', (e) => {
+                    const newInterval = parseInt(e.target.value);
+                    if (newInterval !== sendInterval) {
+                        sendInterval = newInterval;
+                        console.log('发送间隔更新:', sendInterval + 'ms');
+                        
+                        // 重启录制器以应用新的间隔
+                        if (liveMediaRecorder && liveMediaRecorder.state === 'recording') {
+                            liveMediaRecorder.stop();
+                            setTimeout(() => {
+                                if (isLiveVoiceActive) {
+                                    liveMediaRecorder.start(sendInterval);
+                                }
+                            }, 100);
+                        }
+                        
+                        // 重启定期发送
+                        if (liveVoiceInterval) {
+                            clearInterval(liveVoiceInterval);
+                            startPeriodicSend();
+                        }
+                    }
+                });
+            }
         }
         
         function hideLiveVoiceControls() {
