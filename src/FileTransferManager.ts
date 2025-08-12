@@ -241,24 +241,20 @@ export class FileTransferManager {
         return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
-    // 计算最优分片大小 (单个分片最大500MB)
+    // 计算最优分片大小 (考虑WebSocket消息大小限制)
     private calculateOptimalChunkSize(fileSize: number): number {
-        const maxChunkSize = 500 * 1024 * 1024; // 500MB 最大分片
+        // WebSocket消息大小限制约12KB
+        // 测试显示2KB数据产生约7.28KB消息，1KB数据产生约3.71KB消息
+        // 为了安全起见，使用更小的分片大小
+        const maxSafeChunkSize = 2 * 1024; // 2KB 安全分片大小
         
-        // 根据文件大小动态调整分片大小
-        if (fileSize < 10 * 1024 * 1024) { // < 10MB
-            return 64 * 1024; // 64KB
-        } else if (fileSize < 100 * 1024 * 1024) { // < 100MB
-            return 256 * 1024; // 256KB
-        } else if (fileSize < 1024 * 1024 * 1024) { // < 1GB
-            return 512 * 1024; // 512KB
-        } else if (fileSize < 10 * 1024 * 1024 * 1024) { // < 10GB
-            return 1024 * 1024; // 1MB
-        } else if (fileSize < 100 * 1024 * 1024 * 1024) { // < 100GB
-            return 10 * 1024 * 1024; // 10MB
-        } else { // >= 100GB
-            // 对于超大文件，使用最大允许的分片大小
-            return maxChunkSize; // 500MB
+        // 根据文件大小调整分片大小，但不超过安全限制
+        if (fileSize < 1024 * 1024) { // < 1MB
+            return 1 * 1024; // 1KB
+        } else if (fileSize < 10 * 1024 * 1024) { // < 10MB
+            return Math.floor(1.5 * 1024); // 1.5KB
+        } else { // >= 10MB
+            return maxSafeChunkSize; // 2KB
         }
     }
 
