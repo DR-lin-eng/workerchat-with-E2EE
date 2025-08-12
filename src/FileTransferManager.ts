@@ -123,53 +123,161 @@ export class FileTransferManager {
         }
     }
 
-    // 开始发送文件
+    // 开始发送文件 - 使用30并发传输
     private async startFileSending(session: FileTransferSession): Promise<void> {
         const file = session.file!;
         const chunkSize = session.chunkSize || this.chunkSize;
-        const reader = new FileReader();
-        let chunkIndex = 0;
+        const totalChunks = session.totalChunks!;
+        
+        // 并发传输配置
+        const maxConcurrentChunks = 30; // 默认使用30并发
+        const sendQueue = new Set<number>(); // 正在发送的分片索引
+        const completedChunks = new Set<number>(); // 已完成的分片索引
+        let nextChunkIndex = 0;
+        let hasError = false;
 
-        const sendNextChunk = () => {
-            if (chunkIndex >= session.totalChunks!) {
-                // 发送完成
-                this.onTransferComplete(session.transferId, true);
-                this.activeTransfers.delete(session.transferId);
-                return;
-            }
-
-            const start = chunkIndex * chunkSize;
-            const end = Math.min(start + chunkSize, file.size);
-            const chunk = file.slice(start, end);
-
-            reader.onload = (e) => {
-                if (e.target?.result) {
-                    const chunkData = Array.from(new Uint8Array(e.target.result as ArrayBuffer));
-                    
-                    const chunkMessage = {
-                        type: 'fileChunk',
-                        transferId: session.transferId,
-                        targetUserId: session.targetUserId,
-                        chunkIndex,
-                        chunkData,
-                        isLast: chunkIndex === session.totalChunks! - 1
-                    };
-
-                    this.websocket.send(JSON.stringify(chunkMessage));
-                    
-                    chunkIndex++;
-                    const progress = (chunkIndex / session.totalChunks!) * 100;
-                    this.onTransferProgress(session.transferId, progress, 'send');
-                    
-                    // 适当延迟避免过载
-                    setTimeout(sendNextChunk, 50);
-                }
-            };
-
-            reader.readAsArrayBuffer(chunk);
+        // 带宽监控
+        const bandwidthMonitor = {
+            startTime: Date.now(),
+            totalBytes: 0,
+            lastSpeedCheck: Date.now(),
+            currentSpeed: 0, // KB/s
+            speedHistory: [] as number[]
         };
 
-        sendNextChunk();
+        // 更新带宽监控
+        const updateBandwidthMonitor = (bytesTransferred: number) => {
+            const now = Date.now();
+            bandwidthMonitor.totalBytes += bytesTransferred;
+            
+            if (now - bandwidthMonitor.lastSpeedCheck > 1000) { // 每秒更新一次
+                const timeDiff = (now - bandwidthMonitor.lastSpeedCheck) / 1000;
+                const speed = (bytesTransferred / timeDiff) / 1024; // KB/s
+                
+                bandwidthMonitor.currentSpeed = speed;
+                bandwidthMonitor.speedHistory.push(speed);
+                if (bandwidthMonitor.speedHistory.length > 10) {
+                    bandwidthMonitor.speedHistory.shift();
+                }
+                bandwidthMonitor.lastSpeedCheck = now;
+                
+                console.log(`传输速度: ${speed.toFixed(1)} KB/s, 并发数: ${sendQueue.size}, 进度: ${completedChunks.size}/${totalChunks}`);
+            }
+        };
+
+        // 计算动态延迟
+        const calculateDelay = () => {
+            const avgSpeed = bandwidthMonitor.speedHistory.length > 0 
+                ? bandwidthMonitor.speedHistory.reduce((a, b) => a + b, 0) / bandwidthMonitor.speedHistory.length 
+                : 0;
+            
+            if (avgSpeed > 500) return 5;       // 高速网络: 5ms延迟
+            else if (avgSpeed > 200) return 10; // 中速网络: 10ms延迟
+            else if (avgSpeed > 100) return 20; // 低速网络: 20ms延迟
+            else return 50;                     // 慢速网络: 50ms延迟
+        };
+
+        // 发送单个分片
+        const sendSingleChunk = async (chunkIndex: number): Promise<void> => {
+            return new Promise((resolve, reject) => {
+                const start = chunkIndex * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    if (e.target?.result && !hasError) {
+                        const chunkData = Array.from(new Uint8Array(e.target.result as ArrayBuffer));
+                        
+                        const chunkMessage = {
+                            type: 'fileChunk',
+                            transferId: session.transferId,
+                            targetUserId: session.targetUserId,
+                            chunkIndex,
+                            chunkData,
+                            isLast: chunkIndex === totalChunks - 1
+                        };
+
+                        try {
+                            this.websocket.send(JSON.stringify(chunkMessage));
+                            updateBandwidthMonitor(chunk.size);
+                            resolve();
+                        } catch (error) {
+                            reject(error);
+                        }
+                    } else {
+                        reject(new Error('FileReader error or transfer cancelled'));
+                    }
+                };
+                
+                reader.onerror = () => reject(new Error('FileReader error'));
+                reader.readAsArrayBuffer(chunk);
+            });
+        };
+
+        // 并发工作线程
+        const sendChunkWorker = async (): Promise<void> => {
+            while (nextChunkIndex < totalChunks && !hasError) {
+                // 获取下一个要发送的分片索引
+                const chunkIndex = nextChunkIndex++;
+                if (chunkIndex >= totalChunks) break;
+                
+                sendQueue.add(chunkIndex);
+                
+                try {
+                    await sendSingleChunk(chunkIndex);
+                    
+                    // 分片发送成功
+                    sendQueue.delete(chunkIndex);
+                    completedChunks.add(chunkIndex);
+                    
+                    // 更新进度
+                    const progress = (completedChunks.size / totalChunks) * 100;
+                    this.onTransferProgress(session.transferId, progress, 'send');
+                    
+                    // 动态延迟
+                    const delay = calculateDelay();
+                    if (delay > 0) {
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                    
+                } catch (error) {
+                    console.error(`分片 ${chunkIndex} 发送失败:`, error);
+                    sendQueue.delete(chunkIndex);
+                    hasError = true;
+                    break;
+                }
+            }
+        };
+
+        try {
+            console.log(`开始并发传输: ${file.name}, 总分片: ${totalChunks}, 并发数: ${maxConcurrentChunks}`);
+            
+            // 启动多个并发传输线程
+            const promises: Promise<void>[] = [];
+            for (let i = 0; i < maxConcurrentChunks; i++) {
+                promises.push(sendChunkWorker());
+            }
+
+            // 等待所有并发传输完成
+            await Promise.allSettled(promises);
+
+            if (hasError) {
+                this.onTransferComplete(session.transferId, false);
+            } else if (completedChunks.size === totalChunks) {
+                console.log(`传输完成: ${file.name}, 总用时: ${((Date.now() - bandwidthMonitor.startTime) / 1000).toFixed(1)}s`);
+                this.onTransferComplete(session.transferId, true);
+            } else {
+                console.error(`传输不完整: 完成 ${completedChunks.size}/${totalChunks} 分片`);
+                this.onTransferComplete(session.transferId, false);
+            }
+            
+        } catch (error) {
+            console.error('并发传输失败:', error);
+            this.onTransferComplete(session.transferId, false);
+        } finally {
+            this.activeTransfers.delete(session.transferId);
+        }
     }
 
     // 组装接收到的文件
