@@ -733,8 +733,8 @@
             maxHistorySize: 10
         };
 
-        // 固定30并发配置
-        const FIXED_CONCURRENCY = 100;
+        // 固定高并发配置 - 大幅提升传输速度
+        const FIXED_CONCURRENCY = 300;
 
         // 全局安全WebSocket发送函数
         function safeSendMessage(message, errorMessage = '发送消息失败') {
@@ -934,14 +934,14 @@
                         const messageStr = JSON.stringify(message);
                         const messageSize = new Blob([messageStr]).size;
 
-                        // 检查消息大小并记录
-                        if (messageSize > 10 * 1024) { // 10KB警告阈值
+                        // 检查消息大小并记录 - 提高限制以支持大分片
+                        if (messageSize > 100 * 1024) { // 100KB警告阈值
                             console.warn(`WebSocket消息较大: ${messageSize} 字节, 类型: ${message.type}`);
                         }
 
-                        // 如果消息过大，拒绝发送
-                        if (messageSize > 12 * 1024) { // 12KB硬限制
-                            console.error(`WebSocket消息过大: ${messageSize} 字节，超过12KB限制`);
+                        // 如果消息过大，拒绝发送 - Cloudflare Worker支持最大1MB消息
+                        if (messageSize > 800 * 1024) { // 800KB硬限制，留一些余量
+                            console.error(`WebSocket消息过大: ${messageSize} 字节，超过800KB限制`);
                             displaySystemMessage(`${errorMessage}: 消息过大 (${messageSize} 字节)`, 'error');
                             return false;
                         }
@@ -960,20 +960,27 @@
                 }
             }
 
-            // 计算最优分片大小 (考虑WebSocket消息大小限制)
+            // 计算最优分片大小 - 精确计算Base64编码后的大小
             calculateOptimalChunkSize(fileSize) {
-                // WebSocket消息大小限制约12KB
-                // 测试显示2KB数据产生约7.28KB消息，1KB数据产生约3.71KB消息
-                // 为了安全起见，使用更小的分片大小
-                const maxSafeChunkSize = 2 * 1024; // 2KB 安全分片大小
-
-                // 根据文件大小调整分片大小，但不超过安全限制
+                // Base64编码精确计算：原始数据 * 4/3，向上取整到4的倍数
+                // 加上JSON开销（字段名、引号、逗号等）约20-30%
+                // 目标：确保最终消息 < 750KB，留50KB安全余量
+                
+                const maxSafeMessageSize = 750 * 1024; // 750KB安全限制
+                const jsonOverhead = 1.25; // JSON开销25%
+                const base64Overhead = 4/3; // Base64编码开销33.33%
+                
+                // 反推最大原始数据大小
+                const maxRawSize = Math.floor(maxSafeMessageSize / (base64Overhead * jsonOverhead));
+                
                 if (fileSize < 1024 * 1024) { // < 1MB
-                    return 1 * 1024; // 1KB
+                    return Math.min(128 * 1024, maxRawSize); // 最多128KB
                 } else if (fileSize < 10 * 1024 * 1024) { // < 10MB
-                    return 1.5 * 1024; // 1.5KB
-                } else { // >= 10MB
-                    return maxSafeChunkSize; // 2KB
+                    return Math.min(256 * 1024, maxRawSize); // 最多256KB
+                } else if (fileSize < 100 * 1024 * 1024) { // < 100MB
+                    return Math.min(384 * 1024, maxRawSize); // 最多384KB
+                } else { // >= 100MB
+                    return Math.min(400 * 1024, maxRawSize); // 最多400KB，更安全的限制
                 }
             }
 
@@ -1017,6 +1024,11 @@
                 return transferId;
             }
 
+            // 检查是否为媒体文件（图片/视频）
+            isMediaFile(fileType) {
+                return fileType.startsWith('image/') || fileType.startsWith('video/');
+            }
+
             handleTransferRequest(message) {
                 const { transferId, senderId, metadata } = message;
 
@@ -1034,8 +1046,15 @@
                 this.pendingTransfers.set(transferId, { senderId, metadata });
                 console.log('Stored pending transfer:', transferId);
 
-                // 显示接收请求
-                displayFileTransferRequest(senderId, transferId, metadata);
+                // 如果是图片或视频，自动接受并直接显示在聊天中
+                if (this.isMediaFile(metadata.fileType)) {
+                    console.log('Auto-accepting media file:', metadata.fileName);
+                    this.acceptTransfer(transferId, senderId);
+                    displaySystemMessage(`正在接收${metadata.fileType.startsWith('image/') ? '图片' : '视频'}: ${metadata.fileName}`);
+                } else {
+                    // 普通文件显示接收请求
+                    displayFileTransferRequest(senderId, transferId, metadata);
+                }
             }
 
             acceptTransfer(transferId, senderId) {
@@ -1211,10 +1230,10 @@
                 sendChunksConcurrently();
             }
 
-            // 计算并发数 (固定30并发)
+            // 计算并发数 - 大幅增加并发
             calculateConcurrency(totalChunks) {
-                // 固定使用30并发以获得最佳传输速度
-                return 100;
+                // 大幅增加并发数以获得更高传输速度
+                return Math.min(300, totalChunks); // 最多300并发，但不超过总分片数
             }
 
             // 更新带宽监控
@@ -1276,19 +1295,21 @@
                 return sum / bandwidthMonitor.speedHistory.length;
             }
 
-            // 计算传输延迟
+            // 计算传输延迟 - 大幅减少延迟
             calculateDelay() {
                 const avgSpeed = this.getAverageSpeed();
 
-                // 根据网络速度调整延迟
-                if (avgSpeed > 500) {
-                    return 5; // 高速网络，最小延迟
+                // 大幅减少延迟以提高传输速度
+                if (avgSpeed > 1000) {
+                    return 0; // 高速网络，无延迟
+                } else if (avgSpeed > 500) {
+                    return 1; // 中高速网络，1ms延迟
                 } else if (avgSpeed > 200) {
-                    return 10; // 中速网络
+                    return 2; // 中速网络，2ms延迟
                 } else if (avgSpeed > 100) {
-                    return 20; // 低速网络
+                    return 5; // 低速网络，5ms延迟
                 } else {
-                    return 50; // 很慢的网络，增加延迟避免拥塞
+                    return 10; // 慢速网络，10ms延迟
                 }
             }
 
@@ -1359,14 +1380,45 @@
                 }
             }
 
-            // 异步读取分片数据
+            // 高效的ArrayBuffer到Base64转换
+            arrayBufferToBase64(uint8Array) {
+                // 使用更小的分块避免调用栈溢出
+                let binary = '';
+                const chunkSize = 8192; // 8KB chunks to be safe
+                
+                for (let i = 0; i < uint8Array.length; i += chunkSize) {
+                    const chunk = uint8Array.subarray(i, i + chunkSize);
+                    // 使用apply方法更安全
+                    binary += String.fromCharCode.apply(null, Array.from(chunk));
+                }
+                
+                return btoa(binary);
+            }
+
+            // 高效的Base64到ArrayBuffer转换
+            base64ToArrayBuffer(base64) {
+                const binaryString = atob(base64);
+                const bytes = new Uint8Array(binaryString.length);
+                
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                return bytes;
+            }
+
+            // 异步读取分片数据 - 使用Base64编码
             readChunkAsArray(chunk) {
                 return new Promise((resolve, reject) => {
                     const reader = new FileReader();
                     reader.onload = (e) => {
                         if (e.target?.result) {
-                            const chunkData = Array.from(new Uint8Array(e.target.result));
-                            resolve(chunkData);
+                            // 使用现代的Base64编码方法
+                            const uint8Array = new Uint8Array(e.target.result);
+                            
+                            // 使用更高效的方法转换为Base64
+                            const base64Data = this.arrayBufferToBase64(uint8Array);
+                            resolve(base64Data);
                         } else {
                             reject(new Error('读取分片数据失败'));
                         }
@@ -1394,17 +1446,24 @@
                 }
             }
 
+            // 检查是否为媒体文件（图片/视频）
+            isMediaFile(fileType) {
+                return fileType.startsWith('image/') || fileType.startsWith('video/');
+            }
+
             async assembleReceivedFile(transfer, transferId) {
                 try {
                     const chunks = [];
 
                     // 按顺序组装分片
                     for (let i = 0; i < transfer.metadata.totalChunks; i++) {
-                        const chunkData = transfer.receivedChunks.get(i);
-                        if (!chunkData) {
+                        const base64Data = transfer.receivedChunks.get(i);
+                        if (!base64Data) {
                             throw new Error(`Missing chunk ${i}`);
                         }
-                        chunks.push(new Uint8Array(chunkData));
+                        // 使用高效的Base64解码方法
+                        const chunkData = this.base64ToArrayBuffer(base64Data);
+                        chunks.push(chunkData);
                     }
 
                     // 合并所有分片
@@ -1429,15 +1488,22 @@
                         type: transfer.metadata.fileType
                     });
 
-                    // 自动下载文件
-                    this.downloadFile(file);
-
                     transfer.status = 'completed';
                     transfer.progress = 100;
                     this.updateTransferStatus();
 
-                    displaySystemMessage(`文件 "${file.name}" 接收完成并已下载`);
-                    displayFileMessage(transfer.senderId, file, 'received', transfer.metadata.fileHash);
+                    // 区分处理图片/视频和普通文件
+                    if (this.isMediaFile(transfer.metadata.fileType)) {
+                        // 图片/视频直接显示在聊天中
+                        const mediaUrl = URL.createObjectURL(blob);
+                        displaySystemMessage(`${transfer.metadata.fileType.startsWith('image/') ? '图片' : '视频'} "${file.name}" 接收完成`);
+                        displayMediaMessage(transfer.senderId, file, 'received', transfer.metadata.fileHash, mediaUrl);
+                    } else {
+                        // 普通文件自动下载
+                        this.downloadFile(file);
+                        displaySystemMessage(`文件 "${file.name}" 接收完成并已下载`);
+                        displayFileMessage(transfer.senderId, file, 'received', transfer.metadata.fileHash);
+                    }
 
                     setTimeout(() => activeTransfers.delete(transferId), 5000);
 
@@ -1927,58 +1993,27 @@
             const otherUsers = Array.from(users.keys()).filter(id => id !== userId);
             if (otherUsers.length === 1) {
                 sendFileToUser(otherUsers[0], file);
-                displayMediaMessage(userId, file, mediaType, 'sent');
+                // 为发送方显示媒体预览
+                const mediaUrl = URL.createObjectURL(file);
+                displayMediaMessage(userId, file, 'sent', null, mediaUrl);
             } else if (otherUsers.length > 1) {
                 // 让用户选择发送给谁
                 const userNames = otherUsers.map(id => `${id}: ${getUserName(id)}`).join('\n');
                 const selectedUserId = prompt(`选择发送给哪个用户:\n${userNames}\n\n请输入用户ID:`);
                 if (selectedUserId && users.has(selectedUserId)) {
                     sendFileToUser(selectedUserId, file);
-                    displayMediaMessage(userId, file, mediaType, 'sent');
+                    // 为发送方显示媒体预览
+                    const mediaUrl = URL.createObjectURL(file);
+                    displayMediaMessage(userId, file, 'sent', null, mediaUrl);
                 }
             } else {
                 showNotification('没有其他在线用户', 'warning');
             }
         }
 
-        function displayMediaMessage(senderId, file, mediaType, direction) {
-            const messageEl = document.createElement('div');
-            messageEl.className = `message ${direction}`;
 
-            const senderInfo = users.get(senderId) || { name: senderId.slice(24, 40) };
-            const timestamp = new Date().toLocaleTimeString();
 
-            let mediaContent = '';
-            const fileUrl = URL.createObjectURL(file);
-
-            if (mediaType === 'image') {
-                mediaContent = `
-                    <img src="${fileUrl}" alt="${file.name}" class="media-preview" onclick="openMediaFullscreen('${fileUrl}', 'image')">
-                    <div style="font-size: 0.8em; margin-top: 5px;">${file.name} (${formatFileSize(file.size)})</div>
-                `;
-            } else if (mediaType === 'video') {
-                mediaContent = `
-                    <video controls class="video-preview" onclick="openMediaFullscreen('${fileUrl}', 'video')">
-                        <source src="${fileUrl}" type="${file.type}">
-                        您的浏览器不支持视频播放
-                    </video>
-                    <div style="font-size: 0.8em; margin-top: 5px;">${file.name} (${formatFileSize(file.size)})</div>
-                `;
-            }
-
-            messageEl.innerHTML = `
-                <div class="sender-info">
-                    <span class="sender-name">${senderInfo.name}</span>
-                    <span class="message-time">${timestamp}</span>
-                </div>
-                ${mediaContent}
-            `;
-
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-
-        function openMediaFullscreen(url, type) {
+        function showMediaFullscreen(url, type) {
             const overlay = document.createElement('div');
             overlay.style.cssText = `
                 position: fixed;
@@ -2096,6 +2131,100 @@
                         ${fileHash ? `<div class="file-hash">MD5: ${fileHash.substring(0, 16)}...</div>` : ''}
                     </div>
                     ${type === 'received' ? '<div style="color: var(--success);">✓ 已下载</div>' : ''}
+                </div>
+            `;
+
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function displayMediaMessage(senderId, file, type, fileHash, mediaUrl) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+
+            const senderName = getUserName(senderId);
+            const isImage = file.type.startsWith('image/');
+            const isVideo = file.type.startsWith('video/');
+
+            let mediaContent = '';
+            if (isImage) {
+                mediaContent = `
+                    <img src="${mediaUrl}" 
+                         alt="${file.name}" 
+                         class="media-preview" 
+                         onclick="showMediaFullscreen('${mediaUrl}', 'image')"
+                         style="cursor: pointer; border-radius: 8px; max-width: 300px; max-height: 200px; object-fit: cover;">
+                `;
+            } else if (isVideo) {
+                mediaContent = `
+                    <video src="${mediaUrl}" 
+                           class="video-preview" 
+                           controls 
+                           style="border-radius: 8px; max-width: 300px; max-height: 200px;">
+                        您的浏览器不支持视频播放。
+                    </video>
+                `;
+            }
+
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${new Date().toLocaleTimeString()}</span>
+                </div>
+                <div style="margin-top: 8px;">
+                    ${mediaContent}
+                    <div style="margin-top: 5px; font-size: 0.8em; color: #ccc;">
+                        <div>${file.name}</div>
+                        <div>${formatFileSize(file.size)}</div>
+                        ${fileHash ? `<div style="font-family: monospace; font-size: 0.7em;">MD5: ${fileHash.substring(0, 16)}...</div>` : ''}
+                    </div>
+                </div>
+            `;
+
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function displayMediaMessage(senderId, file, type, fileHash, mediaUrl) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+
+            const senderName = getUserName(senderId);
+            const isImage = file.type.startsWith('image/');
+            const isVideo = file.type.startsWith('video/');
+
+            let mediaContent = '';
+            if (isImage) {
+                mediaContent = `
+                    <img src="${mediaUrl}" 
+                         alt="${file.name}" 
+                         class="media-preview" 
+                         onclick="showMediaFullscreen('${mediaUrl}', 'image')"
+                         style="cursor: pointer; border-radius: 8px; max-width: 300px; max-height: 200px; object-fit: cover;">
+                `;
+            } else if (isVideo) {
+                mediaContent = `
+                    <video src="${mediaUrl}" 
+                           class="video-preview" 
+                           controls 
+                           style="border-radius: 8px; max-width: 300px; max-height: 200px;">
+                        您的浏览器不支持视频播放。
+                    </video>
+                `;
+            }
+
+            messageEl.innerHTML = `
+                <div class="sender-info">
+                    <span class="sender-name">${senderName}</span>
+                    <span class="message-time">${new Date().toLocaleTimeString()}</span>
+                </div>
+                <div style="margin-top: 8px;">
+                    ${mediaContent}
+                    <div style="margin-top: 5px; font-size: 0.8em; color: #ccc;">
+                        <div>${file.name}</div>
+                        <div>${formatFileSize(file.size)}</div>
+                        ${fileHash ? `<div style="font-family: monospace; font-size: 0.7em;">MD5: ${fileHash.substring(0, 16)}...</div>` : ''}
+                    </div>
                 </div>
             `;
 

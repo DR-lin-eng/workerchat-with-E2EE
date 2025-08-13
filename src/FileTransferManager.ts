@@ -5,7 +5,7 @@ export class FileTransferManager {
     
     constructor(
         private websocket: WebSocket,
-        private onFileReceived: (senderId: string, file: File) => void,
+        private onFileReceived: (senderId: string, file: File, mediaUrl?: string) => void,
         private onTransferProgress: (transferId: string, progress: number, type: 'send' | 'receive') => void,
         private onTransferComplete: (transferId: string, success: boolean) => void
     ) {}
@@ -64,18 +64,30 @@ export class FileTransferManager {
         }
     }
 
+    // 检查是否为媒体文件（图片/视频）
+    private isMediaFile(fileType: string): boolean {
+        return fileType.startsWith('image/') || fileType.startsWith('video/');
+    }
+
     // 处理传输请求
     async handleTransferRequest(message: any): Promise<void> {
         const { transferId, senderId, metadata } = message;
         
-        // 询问用户是否接受文件
-        const accept = confirm(
-            `${this.getUserName(senderId)} 想要发送文件:\n` +
-            `文件名: ${metadata.fileName}\n` +
-            `大小: ${this.formatFileSize(metadata.fileSize)}\n` +
-            `类型: ${metadata.fileType}\n\n` +
-            `是否接受?`
-        );
+        let accept = false;
+        
+        // 如果是图片或视频，自动接受并直接显示在聊天中
+        if (this.isMediaFile(metadata.fileType)) {
+            accept = true;
+        } else {
+            // 普通文件需要用户确认
+            accept = confirm(
+                `${this.getUserName(senderId)} 想要发送文件:\n` +
+                `文件名: ${metadata.fileName}\n` +
+                `大小: ${this.formatFileSize(metadata.fileSize)}\n` +
+                `类型: ${metadata.fileType}\n\n` +
+                `是否接受?`
+            );
+        }
 
         // 发送响应
         const response = {
@@ -123,14 +135,41 @@ export class FileTransferManager {
         }
     }
 
+    // 高效的ArrayBuffer到Base64转换
+    private arrayBufferToBase64(uint8Array: Uint8Array): string {
+        // 使用更小的分块避免调用栈溢出
+        let binary = '';
+        const chunkSize = 8192; // 8KB chunks to be safe
+        
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.subarray(i, i + chunkSize);
+            // 使用apply方法更安全
+            binary += String.fromCharCode.apply(null, Array.from(chunk));
+        }
+        
+        return btoa(binary);
+    }
+
+    // 高效的Base64到ArrayBuffer转换
+    private base64ToArrayBuffer(base64: string): Uint8Array {
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        return bytes;
+    }
+
     // 开始发送文件 - 使用30并发传输
     private async startFileSending(session: FileTransferSession): Promise<void> {
         const file = session.file!;
         const chunkSize = session.chunkSize || this.chunkSize;
         const totalChunks = session.totalChunks!;
         
-        // 并发传输配置
-        const maxConcurrentChunks = 100; // 默认使用30并发
+        // 并发传输配置 - 增加并发数
+        const maxConcurrentChunks = 200; // 增加到200并发以提高速度
         const sendQueue = new Set<number>(); // 正在发送的分片索引
         const completedChunks = new Set<number>(); // 已完成的分片索引
         let nextChunkIndex = 0;
@@ -165,16 +204,18 @@ export class FileTransferManager {
             }
         };
 
-        // 计算动态延迟
+        // 计算动态延迟 - 大幅减少延迟
         const calculateDelay = () => {
             const avgSpeed = bandwidthMonitor.speedHistory.length > 0 
                 ? bandwidthMonitor.speedHistory.reduce((a, b) => a + b, 0) / bandwidthMonitor.speedHistory.length 
                 : 0;
             
-            if (avgSpeed > 500) return 5;       // 高速网络: 5ms延迟
-            else if (avgSpeed > 200) return 10; // 中速网络: 10ms延迟
-            else if (avgSpeed > 100) return 20; // 低速网络: 20ms延迟
-            else return 50;                     // 慢速网络: 50ms延迟
+            // 大幅减少延迟以提高传输速度
+            if (avgSpeed > 1000) return 0;      // 高速网络: 无延迟
+            else if (avgSpeed > 500) return 1;  // 中高速网络: 1ms延迟
+            else if (avgSpeed > 200) return 2;  // 中速网络: 2ms延迟
+            else if (avgSpeed > 100) return 5;  // 低速网络: 5ms延迟
+            else return 10;                     // 慢速网络: 10ms延迟
         };
 
         // 发送单个分片
@@ -187,14 +228,16 @@ export class FileTransferManager {
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     if (e.target?.result && !hasError) {
-                        const chunkData = Array.from(new Uint8Array(e.target.result as ArrayBuffer));
+                        // 使用高效的Base64编码方法
+                        const uint8Array = new Uint8Array(e.target.result as ArrayBuffer);
+                        const base64Data = this.arrayBufferToBase64(uint8Array);
                         
                         const chunkMessage = {
                             type: 'fileChunk',
                             transferId: session.transferId,
                             targetUserId: session.targetUserId,
                             chunkIndex,
-                            chunkData,
+                            chunkData: base64Data,
                             isLast: chunkIndex === totalChunks - 1
                         };
 
@@ -287,11 +330,13 @@ export class FileTransferManager {
             
             // 按顺序组装分片
             for (let i = 0; i < session.metadata!.totalChunks; i++) {
-                const chunkData = session.receivedChunks!.get(i);
-                if (!chunkData) {
+                const base64Data = session.receivedChunks!.get(i);
+                if (!base64Data) {
                     throw new Error(`Missing chunk ${i}`);
                 }
-                chunks.push(new Uint8Array(chunkData));
+                // 使用高效的Base64解码方法
+                const chunkData = this.base64ToArrayBuffer(base64Data as string);
+                chunks.push(chunkData);
             }
 
             // 合并所有分片
@@ -316,8 +361,16 @@ export class FileTransferManager {
                 type: session.metadata!.fileType 
             });
 
-            // 通知文件接收完成
-            this.onFileReceived(session.senderId!, file);
+            // 如果是媒体文件，创建URL用于直接显示
+            if (this.isMediaFile(session.metadata!.fileType)) {
+                const mediaUrl = URL.createObjectURL(blob);
+                // 通知媒体文件接收完成，传递URL
+                this.onFileReceived(session.senderId!, file, mediaUrl);
+            } else {
+                // 普通文件正常处理
+                this.onFileReceived(session.senderId!, file);
+            }
+            
             this.onTransferComplete(session.transferId, true);
             
         } catch (error) {
@@ -349,20 +402,27 @@ export class FileTransferManager {
         return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
-    // 计算最优分片大小 (考虑WebSocket消息大小限制)
+    // 计算最优分片大小 - 精确计算Base64编码后的大小
     private calculateOptimalChunkSize(fileSize: number): number {
-        // WebSocket消息大小限制约12KB
-        // 测试显示2KB数据产生约7.28KB消息，1KB数据产生约3.71KB消息
-        // 为了安全起见，使用更小的分片大小
-        const maxSafeChunkSize = 2 * 1024; // 2KB 安全分片大小
+        // Base64编码精确计算：原始数据 * 4/3，向上取整到4的倍数
+        // 加上JSON开销（字段名、引号、逗号等）约20-30%
+        // 目标：确保最终消息 < 750KB，留50KB安全余量
         
-        // 根据文件大小调整分片大小，但不超过安全限制
+        const maxSafeMessageSize = 750 * 1024; // 750KB安全限制
+        const jsonOverhead = 1.25; // JSON开销25%
+        const base64Overhead = 4/3; // Base64编码开销33.33%
+        
+        // 反推最大原始数据大小
+        const maxRawSize = Math.floor(maxSafeMessageSize / (base64Overhead * jsonOverhead));
+        
         if (fileSize < 1024 * 1024) { // < 1MB
-            return 1 * 1024; // 1KB
+            return Math.min(128 * 1024, maxRawSize); // 最多128KB
         } else if (fileSize < 10 * 1024 * 1024) { // < 10MB
-            return Math.floor(1.5 * 1024); // 1.5KB
-        } else { // >= 10MB
-            return maxSafeChunkSize; // 2KB
+            return Math.min(256 * 1024, maxRawSize); // 最多256KB
+        } else if (fileSize < 100 * 1024 * 1024) { // < 100MB
+            return Math.min(384 * 1024, maxRawSize); // 最多384KB
+        } else { // >= 100MB
+            return Math.min(400 * 1024, maxRawSize); // 最多400KB，更安全的限制
         }
     }
 
