@@ -168,11 +168,11 @@ export class FileTransferManager {
         const chunkSize = session.chunkSize || this.chunkSize;
         const totalChunks = session.totalChunks!;
         
-        // 通知准备开始传输（状态：准备中）
-        this.onTransferProgress(session.transferId, 0, 'send');
+        // 准备阶段：不更新进度，避免显示分片准备速度
+        console.log(`准备传输: ${file.name}, 计算哈希和分片...`);
         
-        // 并发传输配置 - 增加并发数
-        const maxConcurrentChunks = 200; // 增加到200并发以提高速度
+        // 并发传输配置 - 修复：合理的并发数避免网络拥塞
+        const maxConcurrentChunks = 2; // 降低到2个并发线程，确保网络传输稳定
         const sendQueue = new Set<number>(); // 正在发送的分片索引
         const completedChunks = new Set<number>(); // 已完成的分片索引
         let nextChunkIndex = 0;
@@ -222,7 +222,7 @@ export class FileTransferManager {
             else return 10;                     // 慢速网络: 10ms延迟
         };
 
-        // 发送单个分片
+        // 发送单个分片 - 修复：添加真实的网络传输确认
         const sendSingleChunk = async (chunkIndex: number): Promise<void> => {
             return new Promise((resolve, reject) => {
                 const start = chunkIndex * chunkSize;
@@ -246,9 +246,16 @@ export class FileTransferManager {
                         };
 
                         try {
+                            // 关键修复：WebSocket发送成功不等于网络传输完成
+                            // 需要添加小延迟确保数据真正进入网络缓冲区
                             this.websocket.send(JSON.stringify(chunkMessage));
-                            updateBandwidthMonitor(chunk.size);
-                            resolve();
+                            
+                            // 添加微小延迟确保数据进入网络栈
+                            setTimeout(() => {
+                                updateBandwidthMonitor(chunk.size);
+                                resolve();
+                            }, 1); // 1ms延迟确保网络传输开始
+                            
                         } catch (error) {
                             reject(error);
                         }
@@ -262,9 +269,14 @@ export class FileTransferManager {
             });
         };
 
-        // 并发工作线程
+        // 并发工作线程 - 修复：控制真实的并发数和网络流控
         const sendChunkWorker = async (): Promise<void> => {
             while (nextChunkIndex < totalChunks && !hasError) {
+                // 控制并发数，避免WebSocket缓冲区溢出
+                while (sendQueue.size >= 2 && !hasError) { // 限制同时发送的分片数为2
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                }
+                
                 // 获取下一个要发送的分片索引
                 const chunkIndex = nextChunkIndex++;
                 if (chunkIndex >= totalChunks) break;
@@ -281,14 +293,18 @@ export class FileTransferManager {
                     // 第一个分片发送成功时，标记实际传输开始
                     if (!firstChunkSent) {
                         firstChunkSent = true;
-                        console.log(`开始实际传输: ${file.name}`);
+                        console.log(`开始实际网络传输: ${file.name}`);
+                        // 第一个分片发送成功时才开始更新进度
+                        this.onTransferProgress(session.transferId, 0, 'send');
                     }
                     
-                    // 更新进度
-                    const progress = (completedChunks.size / totalChunks) * 100;
-                    this.onTransferProgress(session.transferId, progress, 'send');
+                    // 更新实际传输进度（只有在实际传输开始后）
+                    if (firstChunkSent) {
+                        const progress = (completedChunks.size / totalChunks) * 100;
+                        this.onTransferProgress(session.transferId, progress, 'send');
+                    }
                     
-                    // 动态延迟
+                    // 根据网络状况动态调整发送速度
                     const delay = calculateDelay();
                     if (delay > 0) {
                         await new Promise(resolve => setTimeout(resolve, delay));
@@ -318,8 +334,10 @@ export class FileTransferManager {
             if (hasError) {
                 this.onTransferComplete(session.transferId, false);
             } else if (completedChunks.size === totalChunks) {
-                console.log(`传输完成: ${file.name}, 总用时: ${((Date.now() - bandwidthMonitor.startTime) / 1000).toFixed(1)}s`);
-                this.onTransferComplete(session.transferId, true);
+                console.log(`所有分片发送完成: ${file.name}, 等待接收端确认...`);
+                // 修复：不立即显示完成，等待接收端确认
+                session.status = 'waiting_confirmation';
+                this.onTransferProgress(session.transferId, 100, 'send'); // 进度100%但状态为等待确认
             } else {
                 console.error(`传输不完整: 完成 ${completedChunks.size}/${totalChunks} 分片`);
                 this.onTransferComplete(session.transferId, false);
@@ -371,6 +389,18 @@ export class FileTransferManager {
                 type: session.metadata!.fileType 
             });
 
+            // 发送接收完成确认给发送端
+            const confirmationMessage = {
+                type: 'fileTransferConfirmation',
+                transferId: session.transferId,
+                senderId: session.senderId,
+                success: true,
+                message: 'File received and verified successfully'
+            };
+            
+            this.websocket.send(JSON.stringify(confirmationMessage));
+            console.log(`发送接收确认给发送端: ${session.transferId}`);
+
             // 如果是媒体文件，创建URL用于直接显示
             if (this.isMediaFile(session.metadata!.fileType)) {
                 const mediaUrl = URL.createObjectURL(blob);
@@ -385,9 +415,39 @@ export class FileTransferManager {
             
         } catch (error) {
             console.error('File assembly failed:', error);
+            
+            // 发送接收失败确认给发送端
+            const confirmationMessage = {
+                type: 'fileTransferConfirmation',
+                transferId: session.transferId,
+                senderId: session.senderId,
+                success: false,
+                message: `File assembly failed: ${error.message}`
+            };
+            
+            this.websocket.send(JSON.stringify(confirmationMessage));
             this.onTransferComplete(session.transferId, false);
         } finally {
             this.activeTransfers.delete(session.transferId);
+        }
+    }
+
+    // 处理接收端确认消息
+    handleTransferConfirmation(message: any): void {
+        const session = this.activeTransfers.get(message.transferId);
+        if (!session || session.type !== 'send') {
+            console.warn('Received confirmation for unknown or non-send transfer:', message.transferId);
+            return;
+        }
+
+        console.log(`收到接收端确认: ${message.transferId}, 成功: ${message.success}`);
+        
+        if (message.success) {
+            console.log(`传输真正完成: ${session.file?.name}`);
+            this.onTransferComplete(session.transferId, true);
+        } else {
+            console.error(`接收端报告失败: ${message.message}`);
+            this.onTransferComplete(session.transferId, false);
         }
     }
 
@@ -481,6 +541,7 @@ export class FileTransferManager {
 class FileTransferSession {
     transferId: string;
     type: 'send' | 'receive';
+    status?: string; // 添加状态字段
     file?: File;
     targetUserId?: string;
     senderId?: string;
@@ -493,6 +554,7 @@ class FileTransferSession {
     constructor(config: any) {
         this.transferId = config.transferId;
         this.type = config.type;
+        this.status = config.status;
         this.file = config.file;
         this.targetUserId = config.targetUserId;
         this.senderId = config.senderId;

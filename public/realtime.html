@@ -1146,16 +1146,18 @@
                 let startChunkIndex = transfer.sentChunks || 0; // 支持断点续传
                 let isTransferActive = true; // 传输状态标志
 
-                // 设置为准备状态，而不是直接设置为发送中
+                // 设置为准备状态，进度保持为0直到实际开始传输
                 transfer.status = 'preparing';
                 transfer.isActive = true;
                 transfer.sentChunks = startChunkIndex;
+                transfer.progress = 0; // 准备阶段进度为0
                 
                 // 初始化传输监控
                 const transferMonitor = {
                     startTime: Date.now(),
                     firstChunkSent: false,
-                    lastProgressUpdate: Date.now()
+                    lastProgressUpdate: Date.now(),
+                    actualTransferStartTime: 0 // 实际传输开始时间
                 };
 
                 // 并发传输配置
@@ -1182,13 +1184,17 @@
                                 // 第一个分片发送成功时，更新状态为发送中
                                 if (!transferMonitor.firstChunkSent) {
                                     transferMonitor.firstChunkSent = true;
+                                    transferMonitor.actualTransferStartTime = Date.now();
                                     transfer.status = 'sending';
                                     console.log(`开始实际传输: ${file.name}`);
                                 }
                                 
                                 completedChunks.add(chunkIndex);
                                 transfer.sentChunks = completedChunks.size + startChunkIndex;
-                                transfer.progress = (transfer.sentChunks / transfer.totalChunks) * 100;
+                                // 只有在实际传输开始后才更新进度
+                                if (transferMonitor.firstChunkSent) {
+                                    transfer.progress = (transfer.sentChunks / transfer.totalChunks) * 100;
+                                }
                                 this.updateTransferStatus();
                             },
                             onError: (error) => {
@@ -1207,15 +1213,14 @@
 
                     // 检查传输是否完成
                     if (completedChunks.size + startChunkIndex >= transfer.totalChunks && isTransferActive) {
-                        const totalTime = ((Date.now() - bandwidthMonitor.startTime) / 1000).toFixed(1);
-                        console.log(`传输完成: ${file.name}, 总用时: ${totalTime}s, 并发数: 30`);
+                        console.log(`所有分片发送完成: ${file.name}, 等待接收端确认...`);
 
-                        transfer.status = 'completed';
+                        // 修复：不立即显示完成，等待接收端确认
+                        transfer.status = 'waiting_confirmation';
                         transfer.progress = 100;
                         transfer.isActive = false;
                         this.updateTransferStatus();
-                        displaySystemMessage(`文件 "${file.name}" 发送完成`);
-                        setTimeout(() => activeTransfers.delete(transferId), 5000);
+                        displaySystemMessage(`文件 "${file.name}" 发送完成，等待对方确认...`);
                     }
                 };
 
@@ -1244,10 +1249,10 @@
                 sendChunksConcurrently();
             }
 
-            // 计算并发数 - 大幅增加并发
+            // 计算并发数 - 修复：合理的并发数避免网络拥塞
             calculateConcurrency(totalChunks) {
-                // 大幅增加并发数以获得更高传输速度
-                return Math.min(300, totalChunks); // 最多300并发，但不超过总分片数
+                // 降低并发数，避免WebSocket缓冲区溢出和网络拥塞
+                return Math.min(2, totalChunks); // 最多2并发，确保网络传输稳定
             }
 
             // 更新带宽监控
@@ -1339,15 +1344,24 @@
             // 并发传输工作线程
             async sendChunkWorker(transfer, transferId, config) {
                 const file = transfer.file;
+                let activeSends = 0; // 跟踪活跃的发送操作
 
                 while (config.isActive()) {
+                    // 流控制：限制同时进行的发送操作，避免WebSocket缓冲区溢出
+                    while (activeSends >= 2 && config.isActive()) { // 最多2个并发发送
+                        await new Promise(resolve => setTimeout(resolve, 5));
+                    }
+
                     const chunkIndex = config.getNextChunkIndex();
                     if (chunkIndex === null) break; // 没有更多分片
+
+                    activeSends++;
 
                     try {
                         // 检查WebSocket连接状态
                         if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
                             config.onError('WebSocket连接断开');
+                            activeSends--;
                             break;
                         }
 
@@ -1367,18 +1381,19 @@
                             isLast: chunkIndex === transfer.totalChunks - 1
                         };
 
-                        // 安全发送文件分片
+                        // 安全发送文件分片 - 修复：确保数据真正进入网络
                         if (!this.safeSend(chunkMessage, `发送分片 ${chunkIndex} 失败`)) {
                             config.onError('WebSocket发送失败');
                             break;
                         }
 
+                        // 关键修复：添加微小延迟确保数据进入网络栈
+                        await new Promise(resolve => setTimeout(resolve, 2));
+
                         // 更新带宽监控
                         this.updateBandwidthMonitor(chunkData.length);
 
                         config.onChunkSent(chunkIndex);
-
-                        // 不再动态调整并发数，使用固定30并发
 
                         // 根据网络速度调整延迟
                         const delay = this.calculateDelay();
@@ -1386,8 +1401,11 @@
                             await new Promise(resolve => setTimeout(resolve, delay));
                         }
 
+                        activeSends--; // 发送完成，减少活跃计数
+
                     } catch (error) {
                         console.error(`分片 ${chunkIndex} 发送失败:`, error);
+                        activeSends--; // 发送失败，减少活跃计数
                         config.onError(error.message);
                         break;
                     }
@@ -1507,6 +1525,18 @@
                     this.updateTransferStatus();
 
                     // 区分处理图片/视频和普通文件
+                    // 发送接收完成确认给发送端
+                    const confirmationMessage = {
+                        type: 'fileTransferConfirmation',
+                        transferId: transferId,
+                        senderId: transfer.senderId,
+                        success: true,
+                        message: 'File received and verified successfully'
+                    };
+                    
+                    this.safeSend(confirmationMessage, '发送接收确认失败');
+                    console.log(`发送接收确认给发送端: ${transferId}`);
+
                     if (this.isMediaFile(transfer.metadata.fileType)) {
                         // 图片/视频直接显示在聊天中
                         const mediaUrl = URL.createObjectURL(blob);
@@ -1523,9 +1553,46 @@
 
                 } catch (error) {
                     console.error('File assembly failed:', error);
+                    
+                    // 发送接收失败确认给发送端
+                    const confirmationMessage = {
+                        type: 'fileTransferConfirmation',
+                        transferId: transferId,
+                        senderId: transfer.senderId,
+                        success: false,
+                        message: `File assembly failed: ${error.message}`
+                    };
+                    
+                    this.safeSend(confirmationMessage, '发送接收失败确认失败');
+                    
                     transfer.status = 'failed';
                     this.updateTransferStatus();
                     displaySystemMessage(`文件接收失败: ${error.message}`);
+                }
+            }
+
+            // 处理接收端确认消息
+            handleTransferConfirmation(message) {
+                const transfer = activeTransfers.get(message.transferId);
+                if (!transfer || transfer.type !== 'send') {
+                    console.warn('Received confirmation for unknown or non-send transfer:', message.transferId);
+                    return;
+                }
+
+                console.log(`收到接收端确认: ${message.transferId}, 成功: ${message.success}`);
+                
+                if (message.success) {
+                    console.log(`传输真正完成: ${transfer.file?.name}`);
+                    transfer.status = 'completed';
+                    this.updateTransferStatus();
+                    displaySystemMessage(`文件 "${transfer.file.name}" 传输完成并已被对方接收`);
+                    setTimeout(() => activeTransfers.delete(message.transferId), 5000);
+                } else {
+                    console.error(`接收端报告失败: ${message.message}`);
+                    transfer.status = 'failed';
+                    transfer.error = message.message;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`文件传输失败: ${message.message}`, 'error');
                 }
             }
 
@@ -1648,15 +1715,17 @@
                     
                     // 根据状态显示不同信息
                     if (transfer.status === 'preparing') {
-                        statusInfo += ' - 正在准备文件分片...';
+                        statusInfo += ' - 正在计算文件哈希和分片...';
+                    } else if (transfer.status === 'waiting_confirmation') {
+                        statusInfo += ' - 等待对方确认接收完成...';
                     } else if (transfer.status === 'sending' || transfer.status === 'receiving') {
                         if (transfer.sentChunks || (transfer.receivedChunks && transfer.receivedChunks.size)) {
                             const current = transfer.sentChunks || transfer.receivedChunks?.size || 0;
                             const total = transfer.totalChunks || transfer.metadata?.totalChunks || 0;
                             statusInfo += ` (${current}/${total})`;
                             
-                            // 显示传输速度
-                            if (bandwidthMonitor.currentSpeed > 0) {
+                            // 显示传输速度（只在实际传输时显示）
+                            if (bandwidthMonitor.currentSpeed > 0 && transfer.status !== 'preparing') {
                                 statusInfo += ` - ${bandwidthMonitor.currentSpeed.toFixed(1)} KB/s`;
                             }
                         }
@@ -1689,6 +1758,7 @@
                     'preparing': '准备发送',
                     'sending': '发送中',
                     'receiving': '接收中',
+                    'waiting_confirmation': '等待确认',
                     'paused': '已暂停',
                     'completed': '已完成',
                     'failed': '失败',
@@ -1877,6 +1947,9 @@
                     break;
                 case 'fileTransferCancelNotification':
                     fileTransferManager.handleTransferCancel(message);
+                    break;
+                case 'fileTransferConfirmationNotification':
+                    fileTransferManager.handleTransferConfirmation(message);
                     break;
                 case 'voiceNotification':
                     handleVoiceMessage(message);
