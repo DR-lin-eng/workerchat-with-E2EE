@@ -829,16 +829,66 @@
             let resumedCount = 0;
 
             for (const [transferId, transfer] of activeTransfers) {
-                if (transfer.status === 'paused' && transfer.type === 'send' && transfer.resumeTransfer) {
+                if (transfer.status === 'paused' && transfer.type === 'send') {
                     console.log(`恢复传输: ${transfer.file.name} (${transfer.sentChunks}/${transfer.totalChunks})`);
-                    transfer.resumeTransfer();
-                    resumedCount++;
+                    
+                    // 重新绑定新的WebSocket连接
+                    if (transfer.resumeTransfer) {
+                        transfer.resumeTransfer();
+                        resumedCount++;
+                    } else {
+                        // 如果没有resumeTransfer方法，重新启动传输
+                        console.log(`重新启动传输: ${transfer.file.name}`);
+                        restartTransfer(transferId, transfer);
+                        resumedCount++;
+                    }
                 }
             }
 
             if (resumedCount > 0) {
                 showNotification(`已恢复 ${resumedCount} 个暂停的文件传输`, 'info');
             }
+        }
+
+        // 重新启动传输
+        function restartTransfer(transferId, transfer) {
+            if (!fileTransferManager || !transfer.file) {
+                console.error('无法重新启动传输：缺少必要信息');
+                return;
+            }
+
+            // 保存当前状态
+            const currentProgress = transfer.progress;
+            const sentChunkSet = transfer.sentChunkSet;
+            const sentChunks = transfer.sentChunks;
+
+            // 重新发起传输请求，但保持原有的transferId和状态
+            const originalInitiate = fileTransferManager.initiateFileTransfer;
+            fileTransferManager.initiateFileTransfer = async function(targetUserId, file) {
+                const newTransferId = await originalInitiate.call(this, targetUserId, file);
+                
+                // 恢复原有状态到新传输
+                const newTransfer = activeTransfers.get(newTransferId);
+                if (newTransfer) {
+                    // 删除新传输，使用原有transferId
+                    activeTransfers.delete(newTransferId);
+                    
+                    // 更新原传输的状态
+                    transfer.status = 'requesting';
+                    transfer.progress = currentProgress;
+                    transfer.sentChunkSet = sentChunkSet;
+                    transfer.sentChunks = sentChunks;
+                    
+                    console.log(`传输状态已恢复: ${transfer.file.name} (${sentChunks}/${transfer.totalChunks})`);
+                }
+                
+                // 恢复原方法
+                fileTransferManager.initiateFileTransfer = originalInitiate;
+                return transferId; // 返回原有的transferId
+            };
+
+            // 重新发起传输
+            fileTransferManager.initiateFileTransfer(transfer.targetUserId, transfer.file);
         }
 
         // 暂停所有活跃的文件传输
@@ -925,6 +975,109 @@
             constructor(websocket) {
                 this.websocket = websocket;
                 this.pendingTransfers = new Map(); // 存储待处理的传输请求
+                
+                // 重连后重新绑定现有传输的WebSocket连接
+                this.rebindExistingTransfers();
+            }
+
+            // 重新绑定现有传输的WebSocket连接
+            rebindExistingTransfers() {
+                for (const [transferId, transfer] of activeTransfers) {
+                    if (transfer.type === 'send' && transfer.status === 'paused') {
+                        console.log(`重新绑定传输WebSocket: ${transfer.file?.name}`);
+                        
+                        // 重新创建resumeTransfer方法
+                        transfer.resumeTransfer = () => {
+                            if (transfer.status === 'paused' && this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                                transfer.status = 'querying_status';
+                                this.updateTransferStatus();
+                                displaySystemMessage(`查询接收端状态: ${transfer.file.name}`, 'info');
+
+                                // 询问接收端的接收状态
+                                const statusRequest = {
+                                    type: 'fileTransferStatusRequest',
+                                    transferId: transferId,
+                                    targetUserId: transfer.targetUserId
+                                };
+
+                                if (this.safeSend(statusRequest, '查询接收状态失败')) {
+                                    console.log(`查询接收端状态: ${transferId}`);
+                                    
+                                    // 设置超时，如果没有收到响应则使用本地状态恢复
+                                    setTimeout(() => {
+                                        if (transfer.status === 'querying_status') {
+                                            console.warn('查询接收状态超时，使用本地状态恢复');
+                                            this.resumeWithLocalState(transfer, transferId);
+                                        }
+                                    }, 5000); // 5秒超时
+                                } else {
+                                    // 发送失败，直接使用本地状态恢复
+                                    this.resumeWithLocalState(transfer, transferId);
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+
+            // 使用本地状态恢复传输
+            resumeWithLocalState(transfer, transferId) {
+                transfer.status = 'sending';
+                transfer.isActive = true;
+                this.updateTransferStatus();
+                displaySystemMessage(`继续传输文件: ${transfer.file.name}`, 'info');
+
+                // 重新启动传输流程
+                this.restartSendingProcess(transfer, transferId);
+            }
+
+            // 重新启动发送流程
+            async restartSendingProcess(transfer, transferId) {
+                try {
+                    console.log(`重新启动发送流程: ${transfer.file.name} (${transfer.sentChunks}/${transfer.totalChunks})`);
+                    
+                    // 重新创建发送工作线程
+                    const config = {
+                        getNextChunkIndex: () => {
+                            // 找到下一个未发送的分片
+                            for (let i = 0; i < transfer.totalChunks; i++) {
+                                if (!transfer.sentChunkSet || !transfer.sentChunkSet.has(i)) {
+                                    return i;
+                                }
+                            }
+                            return null;
+                        },
+                        isActive: () => transfer.isActive && transfer.status === 'sending',
+                        onChunkSent: (chunkIndex) => {
+                            if (!transfer.sentChunkSet) {
+                                transfer.sentChunkSet = new Set();
+                            }
+                            if (!transfer.sentChunkSet.has(chunkIndex)) {
+                                transfer.sentChunkSet.add(chunkIndex);
+                                transfer.sentChunks = transfer.sentChunkSet.size;
+                                transfer.progress = Math.min((transfer.sentChunks / transfer.totalChunks) * 100, 100);
+                                this.updateTransferStatus();
+                            }
+                        },
+                        onError: (error) => {
+                            console.error('重新启动的传输发生错误:', error);
+                            transfer.status = 'paused';
+                            transfer.error = error;
+                            this.updateTransferStatus();
+                            displaySystemMessage(`传输暂停: ${transfer.file.name}`, 'warning');
+                        }
+                    };
+
+                    // 启动发送工作线程
+                    await this.sendChunkWorker(transfer, transferId, config);
+                    
+                } catch (error) {
+                    console.error('重新启动发送流程失败:', error);
+                    transfer.status = 'failed';
+                    transfer.error = error.message;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`传输失败: ${transfer.file.name}`, 'error');
+                }
             }
 
             // 安全的WebSocket发送方法
@@ -2333,8 +2486,11 @@
                     registerUser();
                 }
 
-                // 恢复暂停的文件传输
-                resumePausedTransfers();
+                // 等待用户注册完成后再恢复传输
+                setTimeout(() => {
+                    // 恢复暂停的文件传输
+                    resumePausedTransfers();
+                }, 1000); // 等待1秒确保注册完成
 
                 showNotification('连接已建立', 'success');
             };
