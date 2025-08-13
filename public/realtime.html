@@ -1397,23 +1397,7 @@
                                 return;
                             }
 
-                            // 检查WebSocket缓冲区状态
-                            if (this.websocket.bufferedAmount > 1024 * 1024) { // 1MB缓冲区限制
-                                console.warn(`WebSocket缓冲区过大: ${this.websocket.bufferedAmount} bytes, 等待清空...`);
-                                
-                                // 等待缓冲区清空
-                                const waitForBuffer = () => {
-                                    if (this.websocket.bufferedAmount < 512 * 1024) { // 等到小于512KB
-                                        sendChunkData();
-                                    } else {
-                                        setTimeout(waitForBuffer, 100);
-                                    }
-                                };
-                                waitForBuffer();
-                            } else {
-                                sendChunkData();
-                            }
-
+                            // 定义发送分片数据的函数
                             const sendChunkData = async () => {
                                 // 读取分片数据
                                 const start = chunkIndex * transfer.chunkSize;
@@ -1445,6 +1429,23 @@
                                     reject(new Error('WebSocket发送失败'));
                                 }
                             };
+
+                            // 检查WebSocket缓冲区状态
+                            if (this.websocket.bufferedAmount > 1024 * 1024) { // 1MB缓冲区限制
+                                console.warn(`WebSocket缓冲区过大: ${this.websocket.bufferedAmount} bytes, 等待清空...`);
+                                
+                                // 等待缓冲区清空
+                                const waitForBuffer = () => {
+                                    if (this.websocket.bufferedAmount < 512 * 1024) { // 等到小于512KB
+                                        sendChunkData();
+                                    } else {
+                                        setTimeout(waitForBuffer, 100);
+                                    }
+                                };
+                                waitForBuffer();
+                            } else {
+                                sendChunkData();
+                            }
 
                         } catch (error) {
                             reject(error);

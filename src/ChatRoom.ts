@@ -4,7 +4,6 @@ import {
     FileStartMessage, FileChunkMessage, FileCompleteMessage, VoiceMessage,
     FileStartNotification, FileChunkNotification, FileCompleteNotification, VoiceNotification,
     FileStatusRequest, FileStatusResponse, FileTransferProgress,
-    WebRTCSignalingMessage, WebRTCSignalingNotification,
     FileTransferRequest, FileTransferResponse, FileTransferChunk, FileTransferCancel,
     FileTransferRequestNotification, FileTransferResponseNotification, 
     FileChunkNotification, FileTransferCancelNotification
@@ -90,9 +89,6 @@ export class ChatRoom {
                 break;
             case 'fileStatus':
                 this.handleFileStatusRequest(webSocket, message);
-                break;
-            case 'webrtc-signaling':
-                this.handleWebRTCSignaling(webSocket, message);
                 break;
             case 'fileTransferRequest':
                 this.handleFileTransferRequest(webSocket, message);
@@ -547,33 +543,7 @@ export class ChatRoom {
         return { id, name };
     }
 
-    private handleWebRTCSignaling(webSocket: WebSocket, message: WebRTCSignalingMessage): void {
-        const sender = this.users.get(webSocket);
-        if (!sender) {
-            this.sendError(webSocket, 'User not registered');
-            return;
-        }
 
-        // 查找目标用户
-        const targetUser = this.findUserById(message.targetId);
-        if (!targetUser) {
-            this.sendError(webSocket, 'Target user not found');
-            return;
-        }
-
-        // 转发信令消息给目标用户
-        const notification: WebRTCSignalingNotification = {
-            type: 'webrtc-signaling-notification',
-            senderId: sender.id,
-            data: message.data
-        };
-
-        try {
-            targetUser.webSocket.send(JSON.stringify(notification));
-        } catch (error) {
-            this.sendError(webSocket, 'Failed to deliver signaling message');
-        }
-    }
 
     private handleFileTransferRequest(webSocket: WebSocket, message: FileTransferRequest): void {
         const sender = this.users.get(webSocket);
