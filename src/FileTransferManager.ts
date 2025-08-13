@@ -168,12 +168,16 @@ export class FileTransferManager {
         const chunkSize = session.chunkSize || this.chunkSize;
         const totalChunks = session.totalChunks!;
         
+        // 通知准备开始传输（状态：准备中）
+        this.onTransferProgress(session.transferId, 0, 'send');
+        
         // 并发传输配置 - 增加并发数
         const maxConcurrentChunks = 200; // 增加到200并发以提高速度
         const sendQueue = new Set<number>(); // 正在发送的分片索引
         const completedChunks = new Set<number>(); // 已完成的分片索引
         let nextChunkIndex = 0;
         let hasError = false;
+        let firstChunkSent = false; // 标记是否已发送第一个分片
 
         // 带宽监控
         const bandwidthMonitor = {
@@ -273,6 +277,12 @@ export class FileTransferManager {
                     // 分片发送成功
                     sendQueue.delete(chunkIndex);
                     completedChunks.add(chunkIndex);
+                    
+                    // 第一个分片发送成功时，标记实际传输开始
+                    if (!firstChunkSent) {
+                        firstChunkSent = true;
+                        console.log(`开始实际传输: ${file.name}`);
+                    }
                     
                     // 更新进度
                     const progress = (completedChunks.size / totalChunks) * 100;

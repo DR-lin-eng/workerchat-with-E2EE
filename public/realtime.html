@@ -1146,10 +1146,17 @@
                 let startChunkIndex = transfer.sentChunks || 0; // 支持断点续传
                 let isTransferActive = true; // 传输状态标志
 
-                // 设置传输状态
-                transfer.status = 'sending';
+                // 设置为准备状态，而不是直接设置为发送中
+                transfer.status = 'preparing';
                 transfer.isActive = true;
                 transfer.sentChunks = startChunkIndex;
+                
+                // 初始化传输监控
+                const transferMonitor = {
+                    startTime: Date.now(),
+                    firstChunkSent: false,
+                    lastProgressUpdate: Date.now()
+                };
 
                 // 并发传输配置
                 const maxConcurrentChunks = this.calculateConcurrency(transfer.totalChunks);
@@ -1172,6 +1179,13 @@
                             },
                             isActive: () => isTransferActive,
                             onChunkSent: (chunkIndex) => {
+                                // 第一个分片发送成功时，更新状态为发送中
+                                if (!transferMonitor.firstChunkSent) {
+                                    transferMonitor.firstChunkSent = true;
+                                    transfer.status = 'sending';
+                                    console.log(`开始实际传输: ${file.name}`);
+                                }
+                                
                                 completedChunks.add(chunkIndex);
                                 transfer.sentChunks = completedChunks.size + startChunkIndex;
                                 transfer.progress = (transfer.sentChunks / transfer.totalChunks) * 100;
@@ -1629,16 +1643,23 @@
                         actionButtons = `<button onclick="fileTransferManager.retryTransfer('${transferId}')" class="download-btn">重试</button>`;
                     }
 
-                    // 构建状态信息
+                    // 构建详细状态信息
                     let statusInfo = `${transfer.type === 'send' ? '发送给' : '接收自'} ${peerName} - ${statusText}`;
-                    if (transfer.sentChunks) {
-                        statusInfo += ` (${transfer.sentChunks}/${transfer.totalChunks})`;
-                    }
-
-                    // 添加速度和并发信息
-                    if (transfer.status === 'sending' && bandwidthMonitor.currentSpeed > 0) {
-                        statusInfo += ` - ${bandwidthMonitor.currentSpeed.toFixed(1)} KB/s`;
-                        statusInfo += ` - 并发: 30`;
+                    
+                    // 根据状态显示不同信息
+                    if (transfer.status === 'preparing') {
+                        statusInfo += ' - 正在准备文件分片...';
+                    } else if (transfer.status === 'sending' || transfer.status === 'receiving') {
+                        if (transfer.sentChunks || (transfer.receivedChunks && transfer.receivedChunks.size)) {
+                            const current = transfer.sentChunks || transfer.receivedChunks?.size || 0;
+                            const total = transfer.totalChunks || transfer.metadata?.totalChunks || 0;
+                            statusInfo += ` (${current}/${total})`;
+                            
+                            // 显示传输速度
+                            if (bandwidthMonitor.currentSpeed > 0) {
+                                statusInfo += ` - ${bandwidthMonitor.currentSpeed.toFixed(1)} KB/s`;
+                            }
+                        }
                     }
 
                     transferEl.innerHTML = `
@@ -1665,6 +1686,7 @@
             getStatusText(status) {
                 const statusMap = {
                     'requesting': '请求中',
+                    'preparing': '准备发送',
                     'sending': '发送中',
                     'receiving': '接收中',
                     'paused': '已暂停',

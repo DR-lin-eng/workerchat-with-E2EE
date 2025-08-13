@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>传输状态修复验证</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status-log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: monospace;
+            font-size: 14px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status-item {
+            margin-bottom: 8px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        .status-requesting { background: #fff3cd; }
+        .status-preparing { background: #d4edda; }
+        .status-sending { background: #cce5ff; }
+        .status-completed { background: #d1ecf1; }
+        .status-error { background: #f8d7da; }
+        
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #28a745;
+            transition: width 0.3s ease;
+        }
+        
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .metric {
+            text-align: center;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 传输状态显示修复验证</h1>
+    
+    <div class="test-panel">
+        <h2>测试控制</h2>
+        <button id="startTest" onclick="startStatusTest()">开始状态测试</button>
+        <button id="clearLog" onclick="clearLog()">清空日志</button>
+        <button id="simulateTransfer" onclick="simulateFileTransfer()">模拟文件传输</button>
+        
+        <div class="progress-bar">
+            <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+        </div>
+        <div id="progressText">准备开始测试...</div>
+    </div>
+    
+    <div class="test-panel">
+        <h2>状态变化日志</h2>
+        <div id="statusLog" class="status-log">
+            <div class="status-item">等待开始测试...</div>
+        </div>
+    </div>
+    
+    <div class="test-panel">
+        <h2>测试指标</h2>
+        <div class="metrics">
+            <div class="metric">
+                <div id="preparationTime" class="metric-value">0ms</div>
+                <div class="metric-label">准备时间</div>
+            </div>
+            <div class="metric">
+                <div id="firstChunkTime" class="metric-value">0ms</div>
+                <div class="metric-label">首个分片时间</div>
+            </div>
+            <div class="metric">
+                <div id="totalTime" class="metric-value">0ms</div>
+                <div class="metric-label">总传输时间</div>
+            </div>
+            <div class="metric">
+                <div id="statusCount" class="metric-value">0</div>
+                <div class="metric-label">状态变化次数</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 测试状态管理
+        class StatusTestManager {
+            constructor() {
+                this.statusHistory = [];
+                this.startTime = 0;
+                this.firstChunkTime = 0;
+                this.completedTime = 0;
+                this.currentProgress = 0;
+            }
+
+            // 记录状态变化
+            logStatus(status, message, progress = null) {
+                const timestamp = Date.now();
+                const relativeTime = this.startTime ? timestamp - this.startTime : 0;
+                
+                const statusRecord = {
+                    status,
+                    message,
+                    timestamp,
+                    relativeTime,
+                    progress
+                };
+                
+                this.statusHistory.push(statusRecord);
+                this.updateUI(statusRecord);
+                this.updateMetrics();
+                
+                console.log(`[${relativeTime}ms] ${status}: ${message}`);
+            }
+
+            // 更新UI显示
+            updateUI(record) {
+                const logEl = document.getElementById('statusLog');
+                const statusEl = document.createElement('div');
+                statusEl.className = `status-item status-${record.status}`;
+                statusEl.innerHTML = `
+                    <strong>[+${record.relativeTime}ms]</strong> 
+                    <span style="color: #007bff;">${record.status.toUpperCase()}</span>: 
+                    ${record.message}
+                    ${record.progress !== null ? ` (${record.progress}%)` : ''}
+                `;
+                
+                logEl.appendChild(statusEl);
+                logEl.scrollTop = logEl.scrollHeight;
+                
+                // 更新进度条
+                if (record.progress !== null) {
+                    this.updateProgress(record.progress);
+                }
+            }
+
+            // 更新进度条
+            updateProgress(progress) {
+                this.currentProgress = progress;
+                const progressFill = document.getElementById('progressFill');
+                const progressText = document.getElementById('progressText');
+                
+                progressFill.style.width = `${progress}%`;
+                progressText.textContent = `传输进度: ${progress.toFixed(1)}%`;
+            }
+
+            // 更新测试指标
+            updateMetrics() {
+                const latest = this.statusHistory[this.statusHistory.length - 1];
+                
+                // 准备时间（从开始到第一个分片）
+                if (latest.status === 'sending' && !this.firstChunkTime) {
+                    this.firstChunkTime = latest.timestamp;
+                    const preparationTime = this.firstChunkTime - this.startTime;
+                    document.getElementById('preparationTime').textContent = `${preparationTime}ms`;
+                    document.getElementById('firstChunkTime').textContent = `${latest.relativeTime}ms`;
+                }
+                
+                // 总时间
+                if (latest.status === 'completed') {
+                    this.completedTime = latest.timestamp;
+                    const totalTime = this.completedTime - this.startTime;
+                    document.getElementById('totalTime').textContent = `${totalTime}ms`;
+                }
+                
+                // 状态变化次数
+                document.getElementById('statusCount').textContent = this.statusHistory.length;
+            }
+
+            // 重置测试
+            reset() {
+                this.statusHistory = [];
+                this.startTime = 0;
+                this.firstChunkTime = 0;
+                this.completedTime = 0;
+                this.currentProgress = 0;
+                
+                // 重置UI
+                document.getElementById('progressFill').style.width = '0%';
+                document.getElementById('progressText').textContent = '准备开始测试...';
+                document.getElementById('preparationTime').textContent = '0ms';
+                document.getElementById('firstChunkTime').textContent = '0ms';
+                document.getElementById('totalTime').textContent = '0ms';
+                document.getElementById('statusCount').textContent = '0';
+            }
+        }
+
+        // 全局测试管理器
+        const testManager = new StatusTestManager();
+
+        // 开始状态测试
+        function startStatusTest() {
+            testManager.reset();
+            testManager.startTime = Date.now();
+            
+            document.getElementById('startTest').disabled = true;
+            
+            testManager.logStatus('requesting', '发送传输请求', 0);
+            
+            // 模拟请求响应延迟
+            setTimeout(() => {
+                testManager.logStatus('preparing', '准备文件分片，计算MD5哈希', 0);
+                
+                // 模拟准备时间（这是修复的关键点）
+                setTimeout(() => {
+                    testManager.logStatus('sending', '开始发送第一个分片', 5);
+                    simulateProgressiveTransfer();
+                }, 500); // 500ms准备时间
+                
+            }, 200); // 200ms请求响应时间
+        }
+
+        // 模拟渐进式传输
+        function simulateProgressiveTransfer() {
+            let progress = 5;
+            const totalChunks = 100;
+            let sentChunks = 5;
+            
+            const sendNextBatch = () => {
+                if (progress >= 100) {
+                    testManager.logStatus('completed', '文件传输完成，验证文件完整性', 100);
+                    document.getElementById('startTest').disabled = false;
+                    return;
+                }
+                
+                // 模拟批量发送分片
+                const batchSize = Math.min(10, totalChunks - sentChunks);
+                sentChunks += batchSize;
+                progress = (sentChunks / totalChunks) * 100;
+                
+                testManager.logStatus('sending', 
+                    `发送分片 ${sentChunks}/${totalChunks}，速度: ${(Math.random() * 500 + 100).toFixed(1)} KB/s`, 
+                    progress
+                );
+                
+                // 随机延迟模拟网络传输
+                const delay = Math.random() * 200 + 50;
+                setTimeout(sendNextBatch, delay);
+            };
+            
+            sendNextBatch();
+        }
+
+        // 模拟完整文件传输
+        function simulateFileTransfer() {
+            testManager.reset();
+            testManager.startTime = Date.now();
+            
+            // 模拟真实的传输状态序列
+            const statusSequence = [
+                { status: 'requesting', message: '向目标用户发送传输请求', delay: 0, progress: 0 },
+                { status: 'preparing', message: '对方接受请求，开始准备传输', delay: 300, progress: 0 },
+                { status: 'preparing', message: '计算文件MD5哈希值', delay: 200, progress: 0 },
+                { status: 'preparing', message: '分割文件为256KB分片', delay: 150, progress: 0 },
+                { status: 'sending', message: '发送第一个分片', delay: 100, progress: 1 },
+                { status: 'sending', message: '并发发送中...', delay: 50, progress: 15 },
+                { status: 'sending', message: '传输速度稳定', delay: 100, progress: 35 },
+                { status: 'sending', message: '已发送一半', delay: 150, progress: 50 },
+                { status: 'sending', message: '传输加速中', delay: 80, progress: 75 },
+                { status: 'sending', message: '发送最后几个分片', delay: 120, progress: 95 },
+                { status: 'completed', message: '传输完成，文件完整性验证通过', delay: 100, progress: 100 }
+            ];
+            
+            let index = 0;
+            const executeNext = () => {
+                if (index >= statusSequence.length) return;
+                
+                const step = statusSequence[index];
+                setTimeout(() => {
+                    testManager.logStatus(step.status, step.message, step.progress);
+                    index++;
+                    executeNext();
+                }, step.delay);
+            };
+            
+            executeNext();
+        }
+
+        // 清空日志
+        function clearLog() {
+            document.getElementById('statusLog').innerHTML = 
+                '<div class="status-item">日志已清空，等待新的测试...</div>';
+            testManager.reset();
+        }
+
+        // 页面加载完成后的初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🔧 传输状态修复验证工具已加载');
+            console.log('点击"开始状态测试"按钮来验证修复效果');
+        });
+    </script>
+</body>
+</html>
