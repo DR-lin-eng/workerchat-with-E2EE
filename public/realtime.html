@@ -1244,8 +1244,19 @@
                         this.updateTransferStatus();
                         displaySystemMessage(`继续传输文件: ${file.name}`, 'info');
 
-                        // 重新计算下一个分片索引
-                        nextChunkIndex = transfer.sentChunks || startChunkIndex;
+                        // 精确计算下一个要发送的分片索引
+                        // 找到最大的已发送分片索引
+                        let maxSentIndex = -1;
+                        if (transfer.sentChunkSet && transfer.sentChunkSet.size > 0) {
+                            for (const chunkIndex of transfer.sentChunkSet) {
+                                maxSentIndex = Math.max(maxSentIndex, chunkIndex);
+                            }
+                            nextChunkIndex = maxSentIndex + 1;
+                        } else {
+                            nextChunkIndex = startChunkIndex;
+                        }
+                        
+                        console.log(`断点续传: 从分片 ${nextChunkIndex} 开始，已完成 ${transfer.sentChunkSet?.size || 0}/${transfer.totalChunks}`);
                         sendChunksConcurrently();
                     }
                 };
@@ -1362,6 +1373,14 @@
                 const retryChunks = new Map(); // 需要重试的分片 {chunkIndex: retryCount}
                 let activeSends = 0; // 当前活跃的发送操作
                 let nextChunkIndex = config.getNextChunkIndex();
+                
+                // 断点续传：初始化已发送分片集合
+                if (transfer.sentChunkSet && transfer.sentChunkSet.size > 0) {
+                    for (const chunkIndex of transfer.sentChunkSet) {
+                        sentChunks.add(chunkIndex);
+                    }
+                    console.log(`断点续传初始化: 已发送 ${sentChunks.size} 个分片`);
+                }
                 
                 console.log(`启动稳定传输模式，并发数: ${maxConcurrentChunks}`);
 
@@ -1520,10 +1539,15 @@
                         
                         if (!config.isActive()) break;
                         
-                        // 准备批量发送的分片
+                        // 准备批量发送的分片 - 跳过已发送的分片
                         const batch = [];
                         for (let i = 0; i < batchSize && nextChunkIndex < transfer.totalChunks; i++) {
-                            batch.push(nextChunkIndex);
+                            // 检查分片是否已经发送过（断点续传）
+                            if (!sentChunks.has(nextChunkIndex)) {
+                                batch.push(nextChunkIndex);
+                            } else {
+                                console.log(`跳过已发送的分片 ${nextChunkIndex}`);
+                            }
                             nextChunkIndex = config.getNextChunkIndex();
                         }
                         
