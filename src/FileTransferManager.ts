@@ -120,18 +120,55 @@ export class FileTransferManager {
         const session = this.activeTransfers.get(message.transferId);
         if (!session || session.type !== 'receive') return;
 
-        const { chunkIndex, chunkData, isLast } = message;
+        const { chunkIndex, chunkData, isLast, requireAck } = message;
         
-        // 存储分片
-        session.receivedChunks!.set(chunkIndex, chunkData);
-        
-        // 更新进度
-        const progress = (session.receivedChunks!.size / session.metadata!.totalChunks) * 100;
-        this.onTransferProgress(message.transferId, progress, 'receive');
+        try {
+            // 验证分片数据
+            if (!chunkData || typeof chunkData !== 'string') {
+                throw new Error('Invalid chunk data');
+            }
+            
+            // 存储分片
+            session.receivedChunks!.set(chunkIndex, chunkData);
+            
+            // 发送分片确认（如果需要）
+            if (requireAck) {
+                const ackMessage = {
+                    type: 'fileChunkAck',
+                    transferId: message.transferId,
+                    chunkIndex,
+                    success: true,
+                    senderId: session.senderId
+                };
+                
+                this.websocket.send(JSON.stringify(ackMessage));
+            }
+            
+            // 更新进度
+            const progress = (session.receivedChunks!.size / session.metadata!.totalChunks) * 100;
+            this.onTransferProgress(message.transferId, progress, 'receive');
 
-        // 检查是否接收完成
-        if (session.receivedChunks!.size === session.metadata!.totalChunks) {
-            this.assembleReceivedFile(session);
+            // 检查是否接收完成
+            if (session.receivedChunks!.size === session.metadata!.totalChunks) {
+                this.assembleReceivedFile(session);
+            }
+            
+        } catch (error) {
+            console.error(`处理分片 ${chunkIndex} 失败:`, error);
+            
+            // 发送分片失败确认
+            if (requireAck) {
+                const ackMessage = {
+                    type: 'fileChunkAck',
+                    transferId: message.transferId,
+                    chunkIndex,
+                    success: false,
+                    error: error.message,
+                    senderId: session.senderId
+                };
+                
+                this.websocket.send(JSON.stringify(ackMessage));
+            }
         }
     }
 
@@ -162,67 +199,61 @@ export class FileTransferManager {
         return bytes;
     }
 
-    // 开始发送文件 - 使用30并发传输
+    // 开始发送文件 - 改进的流控机制
     private async startFileSending(session: FileTransferSession): Promise<void> {
         const file = session.file!;
         const chunkSize = session.chunkSize || this.chunkSize;
         const totalChunks = session.totalChunks!;
         
-        // 准备阶段：不更新进度，避免显示分片准备速度
-        console.log(`准备传输: ${file.name}, 计算哈希和分片...`);
+        console.log(`准备传输: ${file.name}, 总分片: ${totalChunks}`);
         
-        // 并发传输配置 - 修复：合理的并发数避免网络拥塞
-        const maxConcurrentChunks = 2; // 降低到2个并发线程，确保网络传输稳定
-        const sendQueue = new Set<number>(); // 正在发送的分片索引
-        const completedChunks = new Set<number>(); // 已完成的分片索引
+        // 流控配置 - 防止缓冲区溢出
+        const maxPendingChunks = 1; // 最多1个待确认分片，严格控制流量
+        const chunkTimeout = 10000; // 10秒超时
+        const maxRetries = 3; // 最大重试次数
+        
+        // 传输状态跟踪
+        const pendingChunks = new Map<number, { timestamp: number, retries: number }>(); // 待确认的分片
+        const confirmedChunks = new Set<number>(); // 已确认的分片
+        const failedChunks = new Set<number>(); // 失败的分片
         let nextChunkIndex = 0;
         let hasError = false;
-        let firstChunkSent = false; // 标记是否已发送第一个分片
-
-        // 带宽监控
-        const bandwidthMonitor = {
-            startTime: Date.now(),
-            totalBytes: 0,
-            lastSpeedCheck: Date.now(),
-            currentSpeed: 0, // KB/s
-            speedHistory: [] as number[]
+        
+        // 网络状态监控
+        const networkMonitor = {
+            lastConfirmTime: Date.now(),
+            avgConfirmTime: 1000, // 平均确认时间
+            confirmTimes: [] as number[]
         };
 
-        // 更新带宽监控
-        const updateBandwidthMonitor = (bytesTransferred: number) => {
-            const now = Date.now();
-            bandwidthMonitor.totalBytes += bytesTransferred;
+        // 更新网络监控
+        const updateNetworkMonitor = (confirmTime: number) => {
+            networkMonitor.confirmTimes.push(confirmTime);
+            if (networkMonitor.confirmTimes.length > 10) {
+                networkMonitor.confirmTimes.shift();
+            }
+            networkMonitor.avgConfirmTime = networkMonitor.confirmTimes.reduce((a, b) => a + b, 0) / networkMonitor.confirmTimes.length;
+            networkMonitor.lastConfirmTime = Date.now();
+        };
+
+        // 计算动态延迟 - 基于网络确认时间
+        const calculateDelay = () => {
+            const timeSinceLastConfirm = Date.now() - networkMonitor.lastConfirmTime;
+            const avgTime = networkMonitor.avgConfirmTime;
             
-            if (now - bandwidthMonitor.lastSpeedCheck > 1000) { // 每秒更新一次
-                const timeDiff = (now - bandwidthMonitor.lastSpeedCheck) / 1000;
-                const speed = (bytesTransferred / timeDiff) / 1024; // KB/s
-                
-                bandwidthMonitor.currentSpeed = speed;
-                bandwidthMonitor.speedHistory.push(speed);
-                if (bandwidthMonitor.speedHistory.length > 10) {
-                    bandwidthMonitor.speedHistory.shift();
-                }
-                bandwidthMonitor.lastSpeedCheck = now;
-                
-                console.log(`传输速度: ${speed.toFixed(1)} KB/s, 并发数: ${sendQueue.size}, 进度: ${completedChunks.size}/${totalChunks}`);
+            // 如果最近没有确认，增加延迟
+            if (timeSinceLastConfirm > avgTime * 2) {
+                return Math.min(avgTime, 2000); // 最多2秒延迟
+            } else if (avgTime > 3000) {
+                return 1000; // 慢网络1秒延迟
+            } else if (avgTime > 1000) {
+                return 500; // 中等网络500ms延迟
+            } else {
+                return 100; // 快网络100ms延迟
             }
         };
 
-        // 计算动态延迟 - 大幅减少延迟
-        const calculateDelay = () => {
-            const avgSpeed = bandwidthMonitor.speedHistory.length > 0 
-                ? bandwidthMonitor.speedHistory.reduce((a, b) => a + b, 0) / bandwidthMonitor.speedHistory.length 
-                : 0;
-            
-            // 大幅减少延迟以提高传输速度
-            if (avgSpeed > 1000) return 0;      // 高速网络: 无延迟
-            else if (avgSpeed > 500) return 1;  // 中高速网络: 1ms延迟
-            else if (avgSpeed > 200) return 2;  // 中速网络: 2ms延迟
-            else if (avgSpeed > 100) return 5;  // 低速网络: 5ms延迟
-            else return 10;                     // 慢速网络: 10ms延迟
-        };
-
-        // 发送单个分片 - 修复：添加真实的网络传输确认
+        // 发送单个分片 - 等待真实网络传输
         const sendSingleChunk = async (chunkIndex: number): Promise<void> => {
             return new Promise((resolve, reject) => {
                 const start = chunkIndex * chunkSize;
@@ -232,7 +263,6 @@ export class FileTransferManager {
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     if (e.target?.result && !hasError) {
-                        // 使用高效的Base64编码方法
                         const uint8Array = new Uint8Array(e.target.result as ArrayBuffer);
                         const base64Data = this.arrayBufferToBase64(uint8Array);
                         
@@ -242,19 +272,31 @@ export class FileTransferManager {
                             targetUserId: session.targetUserId,
                             chunkIndex,
                             chunkData: base64Data,
-                            isLast: chunkIndex === totalChunks - 1
+                            isLast: chunkIndex === totalChunks - 1,
+                            requireAck: true // 要求确认
                         };
 
                         try {
-                            // 关键修复：WebSocket发送成功不等于网络传输完成
-                            // 需要添加小延迟确保数据真正进入网络缓冲区
-                            this.websocket.send(JSON.stringify(chunkMessage));
-                            
-                            // 添加微小延迟确保数据进入网络栈
-                            setTimeout(() => {
-                                updateBandwidthMonitor(chunk.size);
+                            // 检查WebSocket缓冲区状态
+                            if (this.websocket.bufferedAmount > 1024 * 1024) { // 1MB缓冲区限制
+                                console.warn(`WebSocket缓冲区过大: ${this.websocket.bufferedAmount} bytes, 等待清空...`);
+                                
+                                // 等待缓冲区清空
+                                const waitForBuffer = () => {
+                                    if (this.websocket.bufferedAmount < 512 * 1024) { // 等到小于512KB
+                                        this.websocket.send(JSON.stringify(chunkMessage));
+                                        pendingChunks.set(chunkIndex, { timestamp: Date.now(), retries: 0 });
+                                        resolve();
+                                    } else {
+                                        setTimeout(waitForBuffer, 100);
+                                    }
+                                };
+                                waitForBuffer();
+                            } else {
+                                this.websocket.send(JSON.stringify(chunkMessage));
+                                pendingChunks.set(chunkIndex, { timestamp: Date.now(), retries: 0 });
                                 resolve();
-                            }, 1); // 1ms延迟确保网络传输开始
+                            }
                             
                         } catch (error) {
                             reject(error);
@@ -269,84 +311,145 @@ export class FileTransferManager {
             });
         };
 
-        // 并发工作线程 - 修复：控制真实的并发数和网络流控
-        const sendChunkWorker = async (): Promise<void> => {
+        // 处理分片确认
+        const handleChunkAck = (chunkIndex: number, success: boolean) => {
+            const pending = pendingChunks.get(chunkIndex);
+            if (!pending) return;
+
+            if (success) {
+                const confirmTime = Date.now() - pending.timestamp;
+                updateNetworkMonitor(confirmTime);
+                
+                pendingChunks.delete(chunkIndex);
+                confirmedChunks.add(chunkIndex);
+                
+                // 更新真实进度（基于确认的分片）
+                const progress = (confirmedChunks.size / totalChunks) * 100;
+                this.onTransferProgress(session.transferId, progress, 'send');
+                
+                console.log(`分片 ${chunkIndex} 确认成功, 进度: ${progress.toFixed(1)}%, 确认时间: ${confirmTime}ms`);
+            } else {
+                // 分片失败，标记重试
+                pending.retries++;
+                if (pending.retries >= maxRetries) {
+                    pendingChunks.delete(chunkIndex);
+                    failedChunks.add(chunkIndex);
+                    console.error(`分片 ${chunkIndex} 重试失败，放弃传输`);
+                    hasError = true;
+                } else {
+                    console.warn(`分片 ${chunkIndex} 失败，准备重试 (${pending.retries}/${maxRetries})`);
+                }
+            }
+        };
+
+        // 设置分片确认监听器
+        const originalHandleMessage = this.handleFileChunkAck?.bind(this);
+        this.handleFileChunkAck = (message: any) => {
+            if (message.transferId === session.transferId) {
+                handleChunkAck(message.chunkIndex, message.success);
+            }
+            originalHandleMessage?.(message);
+        };
+
+        // 超时检查器
+        const timeoutChecker = setInterval(() => {
+            const now = Date.now();
+            for (const [chunkIndex, pending] of pendingChunks.entries()) {
+                if (now - pending.timestamp > chunkTimeout) {
+                    console.warn(`分片 ${chunkIndex} 超时，标记重试`);
+                    handleChunkAck(chunkIndex, false);
+                }
+            }
+        }, 1000);
+
+        // 主传输循环 - 严格的流控
+        const sendNextChunk = async (): Promise<void> => {
             while (nextChunkIndex < totalChunks && !hasError) {
-                // 控制并发数，避免WebSocket缓冲区溢出
-                while (sendQueue.size >= 2 && !hasError) { // 限制同时发送的分片数为2
-                    await new Promise(resolve => setTimeout(resolve, 10));
+                // 严格控制待确认分片数量
+                while (pendingChunks.size >= maxPendingChunks && !hasError) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
                 }
                 
-                // 获取下一个要发送的分片索引
-                const chunkIndex = nextChunkIndex++;
-                if (chunkIndex >= totalChunks) break;
+                if (hasError) break;
                 
-                sendQueue.add(chunkIndex);
+                // 检查是否有需要重试的分片
+                let chunkToSend = -1;
+                for (const [chunkIndex, pending] of pendingChunks.entries()) {
+                    if (pending.retries > 0 && Date.now() - pending.timestamp > 1000) {
+                        chunkToSend = chunkIndex;
+                        break;
+                    }
+                }
                 
-                try {
-                    await sendSingleChunk(chunkIndex);
-                    
-                    // 分片发送成功
-                    sendQueue.delete(chunkIndex);
-                    completedChunks.add(chunkIndex);
-                    
-                    // 第一个分片发送成功时，标记实际传输开始
-                    if (!firstChunkSent) {
-                        firstChunkSent = true;
-                        console.log(`开始实际网络传输: ${file.name}`);
-                        // 第一个分片发送成功时才开始更新进度
-                        this.onTransferProgress(session.transferId, 0, 'send');
+                // 如果没有重试分片，发送下一个新分片
+                if (chunkToSend === -1 && nextChunkIndex < totalChunks) {
+                    chunkToSend = nextChunkIndex++;
+                }
+                
+                if (chunkToSend >= 0) {
+                    try {
+                        await sendSingleChunk(chunkToSend);
+                        
+                        // 动态延迟控制
+                        const delay = calculateDelay();
+                        if (delay > 0) {
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                        }
+                        
+                    } catch (error) {
+                        console.error(`分片 ${chunkToSend} 发送失败:`, error);
+                        hasError = true;
+                        break;
                     }
-                    
-                    // 更新实际传输进度（只有在实际传输开始后）
-                    if (firstChunkSent) {
-                        const progress = (completedChunks.size / totalChunks) * 100;
-                        this.onTransferProgress(session.transferId, progress, 'send');
-                    }
-                    
-                    // 根据网络状况动态调整发送速度
-                    const delay = calculateDelay();
-                    if (delay > 0) {
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
-                    
-                } catch (error) {
-                    console.error(`分片 ${chunkIndex} 发送失败:`, error);
-                    sendQueue.delete(chunkIndex);
-                    hasError = true;
-                    break;
+                } else {
+                    // 没有分片需要发送，短暂等待
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
             }
         };
 
         try {
-            console.log(`开始并发传输: ${file.name}, 总分片: ${totalChunks}, 并发数: ${maxConcurrentChunks}`);
+            console.log(`开始流控传输: ${file.name}, 最大待确认分片: ${maxPendingChunks}`);
             
-            // 启动多个并发传输线程
-            const promises: Promise<void>[] = [];
-            for (let i = 0; i < maxConcurrentChunks; i++) {
-                promises.push(sendChunkWorker());
-            }
-
-            // 等待所有并发传输完成
-            await Promise.allSettled(promises);
-
-            if (hasError) {
-                this.onTransferComplete(session.transferId, false);
-            } else if (completedChunks.size === totalChunks) {
-                console.log(`所有分片发送完成: ${file.name}, 等待接收端确认...`);
-                // 修复：不立即显示完成，等待接收端确认
-                session.status = 'waiting_confirmation';
-                this.onTransferProgress(session.transferId, 100, 'send'); // 进度100%但状态为等待确认
+            // 开始传输
+            await sendNextChunk();
+            
+            // 等待所有分片确认完成
+            const waitForCompletion = async (): Promise<boolean> => {
+                const maxWaitTime = 60000; // 最多等待60秒
+                const startTime = Date.now();
+                
+                while (Date.now() - startTime < maxWaitTime) {
+                    if (hasError || failedChunks.size > 0) {
+                        return false;
+                    }
+                    
+                    if (confirmedChunks.size === totalChunks) {
+                        return true;
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+                
+                console.error(`传输超时: 确认 ${confirmedChunks.size}/${totalChunks} 分片`);
+                return false;
+            };
+            
+            const success = await waitForCompletion();
+            
+            if (success) {
+                console.log(`传输完成: ${file.name}, 所有分片已确认`);
+                this.onTransferComplete(session.transferId, true);
             } else {
-                console.error(`传输不完整: 完成 ${completedChunks.size}/${totalChunks} 分片`);
+                console.error(`传输失败: ${file.name}`);
                 this.onTransferComplete(session.transferId, false);
             }
             
         } catch (error) {
-            console.error('并发传输失败:', error);
+            console.error('流控传输失败:', error);
             this.onTransferComplete(session.transferId, false);
         } finally {
+            clearInterval(timeoutChecker);
             this.activeTransfers.delete(session.transferId);
         }
     }
@@ -431,6 +534,9 @@ export class FileTransferManager {
             this.activeTransfers.delete(session.transferId);
         }
     }
+
+    // 处理分片确认消息
+    handleFileChunkAck?: (message: any) => void;
 
     // 处理接收端确认消息
     handleTransferConfirmation(message: any): void {

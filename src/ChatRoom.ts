@@ -106,6 +106,12 @@ export class ChatRoom {
             case 'fileTransferCancel':
                 this.handleFileTransferCancel(webSocket, message);
                 break;
+            case 'fileChunkAck':
+                this.handleFileChunkAck(webSocket, message);
+                break;
+            case 'fileTransferConfirmation':
+                this.handleFileTransferConfirmation(webSocket, message);
+                break;
             default:
                 this.sendError(webSocket, `Unknown message type: ${message.type}`);
         }
@@ -694,6 +700,63 @@ export class ChatRoom {
 
         try {
             targetUser.webSocket.send(JSON.stringify(notification));
+        } catch (error) {
+            // 静默处理错误
+        }
+    }
+
+    private handleFileChunkAck(webSocket: WebSocket, message: any): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找发送端用户
+        const targetUser = this.findUserById(message.senderId);
+        if (!targetUser) {
+            return; // 发送端用户不存在，静默处理
+        }
+
+        // 转发分片确认给发送端
+        const ackMessage = {
+            type: 'fileChunkAckNotification',
+            transferId: message.transferId,
+            chunkIndex: message.chunkIndex,
+            success: message.success,
+            error: message.error
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(ackMessage));
+        } catch (error) {
+            // 静默处理错误
+        }
+    }
+
+    private handleFileTransferConfirmation(webSocket: WebSocket, message: any): void {
+        const sender = this.users.get(webSocket);
+        if (!sender) {
+            this.sendError(webSocket, 'User not registered');
+            return;
+        }
+
+        // 查找发送端用户
+        const targetUser = this.findUserById(message.senderId);
+        if (!targetUser) {
+            return; // 发送端用户不存在，静默处理
+        }
+
+        // 转发传输确认给发送端
+        const confirmationMessage = {
+            type: 'fileTransferConfirmationNotification',
+            transferId: message.transferId,
+            success: message.success,
+            message: message.message
+        };
+
+        try {
+            targetUser.webSocket.send(JSON.stringify(confirmationMessage));
         } catch (error) {
             // 静默处理错误
         }
