@@ -1151,6 +1151,7 @@
                 transfer.isActive = true;
                 transfer.sentChunks = startChunkIndex;
                 transfer.progress = 0; // 准备阶段进度为0
+                transfer.sentChunkSet = new Set(); // 用于跟踪已发送的分片，避免重复计算
                 
                 // 初始化传输监控
                 const transferMonitor = {
@@ -1189,13 +1190,17 @@
                                     console.log(`开始实际传输: ${file.name}`);
                                 }
                                 
-                                completedChunks.add(chunkIndex);
-                                transfer.sentChunks = completedChunks.size + startChunkIndex;
-                                // 只有在实际传输开始后才更新进度
-                                if (transferMonitor.firstChunkSent) {
-                                    transfer.progress = (transfer.sentChunks / transfer.totalChunks) * 100;
+                                // 使用Set避免重复计算同一个分片
+                                if (!transfer.sentChunkSet.has(chunkIndex)) {
+                                    transfer.sentChunkSet.add(chunkIndex);
+                                    transfer.sentChunks = transfer.sentChunkSet.size + startChunkIndex;
+                                    
+                                    // 只有在实际传输开始后才更新进度
+                                    if (transferMonitor.firstChunkSent) {
+                                        transfer.progress = Math.min((transfer.sentChunks / transfer.totalChunks) * 100, 100);
+                                    }
+                                    this.updateTransferStatus();
                                 }
-                                this.updateTransferStatus();
                             },
                             onError: (error) => {
                                 console.error('分片发送错误:', error);
@@ -1249,15 +1254,17 @@
                 sendChunksConcurrently();
             }
 
-            // 计算并发数 - 高速传输优化
+            // 计算并发数 - 极速传输优化
             calculateConcurrency(totalChunks) {
-                // 根据文件大小和网络状况动态调整并发数
+                // 根据文件大小动态调整并发数 - 大幅提升
                 if (totalChunks < 10) {
-                    return Math.min(5, totalChunks); // 小文件低并发
-                } else if (totalChunks < 100) {
-                    return Math.min(20, totalChunks); // 中等文件中并发
+                    return Math.min(10, totalChunks); // 小文件10并发
+                } else if (totalChunks < 50) {
+                    return Math.min(50, totalChunks); // 中等文件50并发
+                } else if (totalChunks < 200) {
+                    return Math.min(100, totalChunks); // 大文件100并发
                 } else {
-                    return Math.min(50, totalChunks); // 大文件高并发
+                    return Math.min(200, totalChunks); // 超大文件200并发
                 }
             }
 
@@ -1351,11 +1358,11 @@
             async sendChunkWorker(transfer, transferId, config) {
                 const file = transfer.file;
                 
-                // 传输模式配置
+                // 传输模式配置 - 极速优化
                 const isFastMode = true; // 默认使用高速模式
-                const maxConcurrentChunks = isFastMode ? 50 : 1; // 高速模式50并发，慢速模式1并发
-                const batchSize = 10; // 批量发送大小
-                const retryDelay = 1000; // 重试延迟
+                const maxConcurrentChunks = isFastMode ? 200 : 1; // 高速模式200并发，慢速模式1并发
+                const batchSize = 50; // 批量发送大小提升到50
+                const retryDelay = 100; // 重试延迟减少到100ms
                 
                 // 传输状态跟踪
                 const sentChunks = new Set(); // 已发送的分片
@@ -1430,8 +1437,8 @@
                                 // 更新进度
                                 config.onChunkSent(chunkIndex);
                                 
-                                // 小延迟避免过度拥塞
-                                await new Promise(resolve => setTimeout(resolve, 1));
+                                // 移除延迟，最大化传输速度
+                                // await new Promise(resolve => setTimeout(resolve, 1));
                                 
                             } else {
                                 throw new Error('WebSocket发送失败');
@@ -1456,14 +1463,14 @@
                     await Promise.allSettled(promises);
                 };
 
-                // 等待缓冲区清空
+                // 等待缓冲区清空 - 优化检查频率
                 const waitForBufferClear = () => {
                     return new Promise((resolve) => {
                         const checkBuffer = () => {
                             if (this.websocket.bufferedAmount < 1024 * 1024) { // 等到小于1MB
                                 resolve();
                             } else {
-                                setTimeout(checkBuffer, 50);
+                                setTimeout(checkBuffer, 5); // 减少到5ms快速检查
                             }
                         };
                         checkBuffer();
@@ -1476,9 +1483,9 @@
                     
                     // 第一阶段：批量高速发送
                     while (config.isActive() && nextChunkIndex !== null && nextChunkIndex < transfer.totalChunks) {
-                        // 控制并发数
+                        // 控制并发数 - 减少等待时间
                         while (activeSends >= maxConcurrentChunks && config.isActive()) {
-                            await new Promise(resolve => setTimeout(resolve, 10));
+                            await new Promise(resolve => setTimeout(resolve, 1)); // 1ms快速检查
                         }
                         
                         if (!config.isActive()) break;
@@ -1494,9 +1501,9 @@
                             // 批量发送
                             await sendChunkBatch(batch);
                             
-                            // 如果网络状况不佳，增加延迟
+                            // 如果网络状况不佳，轻微延迟
                             if (!networkHealthy) {
-                                await new Promise(resolve => setTimeout(resolve, 100));
+                                await new Promise(resolve => setTimeout(resolve, 10)); // 减少到10ms
                             }
                         }
                     }
@@ -1515,8 +1522,8 @@
                                 await this.sendChunkWithAck(chunkIndex, transfer, transferId);
                                 retryChunks.set(chunkIndex, 1);
                                 
-                                // 重传延迟
-                                await new Promise(resolve => setTimeout(resolve, retryDelay));
+                                // 重传延迟 - 减少延迟
+                                await new Promise(resolve => setTimeout(resolve, 100)); // 减少到100ms
                                 
                             } catch (error) {
                                 console.error(`重传分片 ${chunkIndex} 失败:`, error);
@@ -1529,7 +1536,7 @@
                     const startWait = Date.now();
                     
                     while (retryChunks.size > 0 && Date.now() - startWait < maxWaitTime && config.isActive()) {
-                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        await new Promise(resolve => setTimeout(resolve, 100)); // 减少到100ms检查
                     }
                     
                     const totalSent = sentChunks.size + (failedChunks.size - retryChunks.size);
@@ -1663,9 +1670,14 @@
                         throw new Error('Invalid chunk data');
                     }
 
-                    // 存储分片
+                    // 存储分片（检查是否重复）
+                    if (transfer.receivedChunks.has(chunkIndex)) {
+                        console.warn(`收到重复分片 ${chunkIndex}，忽略`);
+                        return; // 忽略重复分片
+                    }
+                    
                     transfer.receivedChunks.set(chunkIndex, chunkData);
-                    transfer.progress = (transfer.receivedChunks.size / transfer.metadata.totalChunks) * 100;
+                    transfer.progress = Math.min((transfer.receivedChunks.size / transfer.metadata.totalChunks) * 100, 100);
 
                     // 发送分片确认（仅在重传模式下需要）
                     if (requireAck) {
@@ -1966,8 +1978,18 @@
                         statusInfo += ' - 等待对方确认接收完成...';
                     } else if (transfer.status === 'sending' || transfer.status === 'receiving') {
                         if (transfer.sentChunks || (transfer.receivedChunks && transfer.receivedChunks.size)) {
-                            const current = transfer.sentChunks || transfer.receivedChunks?.size || 0;
-                            const total = transfer.totalChunks || transfer.metadata?.totalChunks || 0;
+                            let current, total;
+                            
+                            if (transfer.type === 'send') {
+                                // 发送端：使用sentChunkSet的大小，确保不超过总数
+                                current = Math.min(transfer.sentChunkSet?.size || transfer.sentChunks || 0, transfer.totalChunks || 0);
+                                total = transfer.totalChunks || 0;
+                            } else {
+                                // 接收端：使用receivedChunks的大小
+                                current = transfer.receivedChunks?.size || 0;
+                                total = transfer.metadata?.totalChunks || 0;
+                            }
+                            
                             statusInfo += ` (${current}/${total})`;
                             
                             // 显示传输速度（只在实际传输时显示）
