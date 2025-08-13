@@ -1793,12 +1793,189 @@
                     }
                     
                     const totalSent = sentChunks.size + (failedChunks.size - retryChunks.size);
-                    console.log(`传输完成，成功: ${totalSent}/${transfer.totalChunks}, 最终失败: ${retryChunks.size}`);
+                    console.log(`初步传输完成，成功: ${totalSent}/${transfer.totalChunks}, 最终失败: ${retryChunks.size}`);
+                    
+                    // 第三阶段：丢包检测和重传
+                    if (totalSent >= transfer.totalChunks * 0.95) { // 如果发送了95%以上，进行丢包检测
+                        console.log(`开始丢包检测和重传...`);
+                        await this.handlePacketLossRetransmission(transfer, transferId, config);
+                    } else {
+                        console.log(`传输成功率过低 (${((totalSent/transfer.totalChunks)*100).toFixed(1)}%)，标记为失败`);
+                        config.onError('传输成功率过低');
+                    }
                     
                 } catch (error) {
                     console.error('批量传输失败:', error);
                     config.onError(error.message);
                 }
+            }
+
+            // 处理丢包检测和重传
+            async handlePacketLossRetransmission(transfer, transferId, config) {
+                const maxRetransmissionRounds = 5; // 最多5轮重传
+                let retransmissionRound = 0;
+                
+                while (retransmissionRound < maxRetransmissionRounds && config.isActive()) {
+                    retransmissionRound++;
+                    console.log(`第${retransmissionRound}轮丢包检测...`);
+                    
+                    // 更新传输状态为检测中
+                    transfer.status = 'checking_missing';
+                    this.updateTransferStatus();
+                    displaySystemMessage(`检测丢包: ${transfer.file.name} (第${retransmissionRound}轮)`, 'info');
+                    
+                    // 查询接收端缺失分片
+                    const missingChunks = await this.queryMissingChunks(transfer, transferId);
+                    
+                    if (!missingChunks || missingChunks.length === 0) {
+                        console.log(`✅ 无缺失分片，传输完成！`);
+                        transfer.status = 'completed';
+                        transfer.progress = 100;
+                        this.updateTransferStatus();
+                        displaySystemMessage(`文件 "${transfer.file.name}" 传输完成，无丢包`, 'success');
+                        return;
+                    }
+                    
+                    console.log(`🔄 发现 ${missingChunks.length} 个缺失分片，开始重传...`);
+                    transfer.status = 'retransmitting';
+                    this.updateTransferStatus();
+                    displaySystemMessage(`重传丢包: ${transfer.file.name} (${missingChunks.length}个分片)`, 'warning');
+                    
+                    // 重传缺失分片
+                    const retransmissionSuccess = await this.retransmitMissingChunks(transfer, transferId, missingChunks);
+                    
+                    if (!retransmissionSuccess) {
+                        console.error(`❌ 第${retransmissionRound}轮重传失败`);
+                        break;
+                    }
+                    
+                    // 等待一段时间让接收端处理
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+                
+                // 最终检查
+                const finalMissingChunks = await this.queryMissingChunks(transfer, transferId);
+                if (!finalMissingChunks || finalMissingChunks.length === 0) {
+                    transfer.status = 'completed';
+                    transfer.progress = 100;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`文件 "${transfer.file.name}" 传输完成`, 'success');
+                } else {
+                    transfer.status = 'failed';
+                    transfer.error = `仍有${finalMissingChunks.length}个分片缺失`;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`传输失败: ${transfer.file.name} (${finalMissingChunks.length}个分片缺失)`, 'error');
+                }
+            }
+
+            // 查询接收端缺失分片
+            async queryMissingChunks(transfer, transferId) {
+                return new Promise((resolve) => {
+                    console.log(`查询接收端缺失分片: ${transferId}`);
+                    
+                    // 设置临时响应处理器
+                    const originalHandler = transfer.handleStatusResponse;
+                    let responseReceived = false;
+                    
+                    transfer.handleStatusResponse = (statusMessage) => {
+                        responseReceived = true;
+                        transfer.handleStatusResponse = originalHandler; // 恢复原处理器
+                        resolve(statusMessage.missingChunks);
+                    };
+                    
+                    // 发送状态查询请求
+                    const statusRequest = {
+                        type: 'fileTransferStatusRequest',
+                        transferId: transferId,
+                        targetUserId: transfer.targetUserId
+                    };
+                    
+                    if (this.safeSend(statusRequest, '查询缺失分片失败')) {
+                        // 设置超时
+                        setTimeout(() => {
+                            if (!responseReceived) {
+                                transfer.handleStatusResponse = originalHandler;
+                                console.warn('查询缺失分片超时');
+                                resolve(null); // 超时返回null
+                            }
+                        }, 10000); // 10秒超时
+                    } else {
+                        transfer.handleStatusResponse = originalHandler;
+                        resolve(null); // 发送失败返回null
+                    }
+                });
+            }
+
+            // 重传缺失分片
+            async retransmitMissingChunks(transfer, transferId, missingChunks) {
+                let successCount = 0;
+                const totalMissing = missingChunks.length;
+                
+                console.log(`开始重传 ${totalMissing} 个缺失分片:`, missingChunks.slice(0, 10));
+                
+                // 分批重传，避免过载
+                const batchSize = 5;
+                for (let i = 0; i < missingChunks.length; i += batchSize) {
+                    const batch = missingChunks.slice(i, i + batchSize);
+                    
+                    const batchPromises = batch.map(async (chunkIndex) => {
+                        try {
+                            await this.retransmitSingleChunk(transfer, transferId, chunkIndex);
+                            successCount++;
+                            
+                            // 更新重传进度
+                            const retransmitProgress = (successCount / totalMissing) * 100;
+                            console.log(`重传进度: ${successCount}/${totalMissing} (${retransmitProgress.toFixed(1)}%)`);
+                            
+                            return true;
+                        } catch (error) {
+                            console.error(`重传分片 ${chunkIndex} 失败:`, error);
+                            return false;
+                        }
+                    });
+                    
+                    await Promise.allSettled(batchPromises);
+                    
+                    // 批次间延迟
+                    if (i + batchSize < missingChunks.length) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                }
+                
+                const successRate = (successCount / totalMissing) * 100;
+                console.log(`重传完成: ${successCount}/${totalMissing} (${successRate.toFixed(1)}%)`);
+                
+                return successRate >= 90; // 90%以上成功率认为重传成功
+            }
+
+            // 重传单个分片
+            async retransmitSingleChunk(transfer, transferId, chunkIndex) {
+                const file = transfer.file;
+                const chunkSize = transfer.chunkSize || this.chunkSize;
+                
+                // 读取分片数据
+                const start = chunkIndex * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+                const chunkData = await this.readChunkAsArray(chunk);
+
+                const chunkMessage = {
+                    type: 'realtimeFileChunk',
+                    transferId: transferId,
+                    targetUserId: transfer.targetUserId,
+                    chunkIndex,
+                    chunkData,
+                    isLast: chunkIndex === transfer.totalChunks - 1,
+                    requireAck: false, // 重传时不要求确认，提高速度
+                    isRetransmission: true // 标记为重传
+                };
+
+                if (!this.safeSend(chunkMessage, `重传分片 ${chunkIndex} 失败`)) {
+                    throw new Error('WebSocket发送失败');
+                }
+                
+                // 重传延迟
+                await new Promise(resolve => setTimeout(resolve, 50));
             }
 
             // 带确认的分片发送（仅用于重传）
@@ -2156,6 +2333,11 @@
                 if (transfer.status === 'querying_status') {
                     // 根据接收端状态精确恢复传输
                     this.resumeWithReceiverStatus(transfer, message);
+                } else if (transfer.status === 'checking_missing' || transfer.status === 'retransmitting') {
+                    // 丢包检测状态响应
+                    if (transfer.handleStatusResponse) {
+                        transfer.handleStatusResponse(message);
+                    }
                 }
             }
 
@@ -2362,6 +2544,9 @@
                     'sending': '发送中',
                     'receiving': '接收中',
                     'waiting_confirmation': '等待确认',
+                    'querying_status': '查询状态',
+                    'checking_missing': '检测丢包',
+                    'retransmitting': '重传中',
                     'paused': '已暂停',
                     'completed': '已完成',
                     'failed': '失败',
