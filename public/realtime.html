@@ -621,6 +621,44 @@
         .transfer-item:last-child {
             margin-bottom: 0;
         }
+
+        /* 拖拽上传样式 */
+        .drag-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(74, 111, 165, 0.8);
+            border: 3px dashed rgba(255, 255, 255, 0.8);
+            border-radius: 15px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .drag-overlay.active {
+            display: flex;
+        }
+
+        .drag-content {
+            text-align: center;
+            color: white;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+
+        .drag-icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .chat-area.drag-over {
+            background: rgba(74, 111, 165, 0.1);
+            border: 2px dashed rgba(74, 111, 165, 0.5);
+        }
     </style>
 </head>
 
@@ -653,16 +691,27 @@
             </div>
         </div>
 
-        <div class="panel chat-area">
+        <div class="panel chat-area" id="chatArea">
             <div class="header">
                 <h2 id="roomName">实时文件传输聊天室</h2>
                 <div class="room-url" id="roomUrl"></div>
                 <div style="font-size: 0.8em; color: #ccc;">
-                    支持 WebSocket 实时文件传输，文件完整性 MD5 验证
+                    支持 WebSocket 实时文件传输，文件完整性 MD5 验证 | 支持拖拽上传
                 </div>
             </div>
 
             <div class="messages" id="messages"></div>
+            
+            <!-- 拖拽上传覆盖层 -->
+            <div class="drag-overlay" id="dragOverlay">
+                <div class="drag-content">
+                    <div class="drag-icon">📁</div>
+                    <div>拖拽文件到这里上传</div>
+                    <div style="font-size: 0.8em; margin-top: 10px; opacity: 0.8;">
+                        支持多文件同时上传
+                    </div>
+                </div>
+            </div>
 
             <div class="input-area">
                 <div class="input-container">
@@ -969,6 +1018,8 @@
         const transferStatusEl = document.getElementById('transferStatus');
         const transferListEl = document.getElementById('transferList');
         const roomUrlEl = document.getElementById('roomUrl');
+        const chatAreaEl = document.getElementById('chatArea');
+        const dragOverlayEl = document.getElementById('dragOverlay');
 
         // WebSocket 文件传输管理器
         class FileTransferManager {
@@ -1145,6 +1196,7 @@
 
                 // 存储传输信息
                 activeTransfers.set(transferId, {
+                    transferId: transferId, // 添加transferId字段
                     type: 'send',
                     file: file,
                     targetUserId: targetUserId,
@@ -1244,6 +1296,7 @@
 
                 // 创建接收会话，包含 metadata
                 activeTransfers.set(transferId, {
+                    transferId: transferId, // 添加transferId字段
                     type: 'receive',
                     senderId: senderId,
                     metadata: pendingTransfer.metadata,
@@ -2397,21 +2450,125 @@
                 if (statusMessage.missingChunks.length > 0) {
                     console.log(`需要重传 ${statusMessage.missingChunks.length} 个缺失分片:`, statusMessage.missingChunks.slice(0, 10));
                     transfer.missingChunks = new Set(statusMessage.missingChunks);
+                    
+                    // 直接开始重传缺失分片
+                    this.startMissingChunksRetransmission(transfer, statusMessage.missingChunks);
                 } else {
                     transfer.missingChunks = new Set();
-                }
-
-                // 恢复传输
-                transfer.status = 'sending';
-                transfer.isActive = true;
-                this.updateTransferStatus();
-                
-                // 调用恢复方法
-                if (transfer.resumeWithLocalState) {
-                    transfer.resumeWithLocalState();
+                    // 没有缺失分片，传输完成
+                    transfer.status = 'completed';
+                    transfer.progress = 100;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`文件 "${transfer.file.name}" 传输完成`, 'success');
                 }
 
                 displaySystemMessage(`精确恢复传输: ${transfer.file.name} (${statusMessage.totalReceived}/${transfer.totalChunks})`, 'success');
+            }
+
+            // 开始缺失分片重传
+            async startMissingChunksRetransmission(transfer, missingChunks) {
+                transfer.status = 'retransmitting';
+                transfer.isActive = true;
+                this.updateTransferStatus();
+                
+                console.log(`开始重传 ${missingChunks.length} 个缺失分片`);
+                displaySystemMessage(`重传缺失分片: ${transfer.file.name} (${missingChunks.length}个)`, 'warning');
+
+                try {
+                    // 分批重传缺失分片
+                    const batchSize = 5;
+                    let successCount = 0;
+                    
+                    for (let i = 0; i < missingChunks.length; i += batchSize) {
+                        if (!transfer.isActive) break;
+                        
+                        const batch = missingChunks.slice(i, i + batchSize);
+                        console.log(`重传批次 ${Math.floor(i/batchSize) + 1}: 分片 ${batch[0]} - ${batch[batch.length-1]}`);
+                        
+                        const batchPromises = batch.map(async (chunkIndex) => {
+                            try {
+                                await this.retransmitSingleChunk(transfer, transfer.transferId, chunkIndex);
+                                successCount++;
+                                
+                                // 更新重传进度
+                                const retransmitProgress = (successCount / missingChunks.length) * 100;
+                                console.log(`重传进度: ${successCount}/${missingChunks.length} (${retransmitProgress.toFixed(1)}%)`);
+                                
+                                return true;
+                            } catch (error) {
+                                console.error(`重传分片 ${chunkIndex} 失败:`, error);
+                                return false;
+                            }
+                        });
+                        
+                        await Promise.allSettled(batchPromises);
+                        
+                        // 批次间延迟
+                        if (i + batchSize < missingChunks.length) {
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        }
+                    }
+                    
+                    const successRate = (successCount / missingChunks.length) * 100;
+                    console.log(`重传完成: ${successCount}/${missingChunks.length} (${successRate.toFixed(1)}%)`);
+                    
+                    if (successRate >= 90) {
+                        // 重传成功，等待一段时间后再次查询状态
+                        setTimeout(() => {
+                            this.queryFinalStatus(transfer);
+                        }, 2000);
+                    } else {
+                        transfer.status = 'failed';
+                        transfer.error = `重传成功率过低: ${successRate.toFixed(1)}%`;
+                        this.updateTransferStatus();
+                        displaySystemMessage(`重传失败: ${transfer.file.name}`, 'error');
+                    }
+                    
+                } catch (error) {
+                    console.error('重传过程失败:', error);
+                    transfer.status = 'failed';
+                    transfer.error = error.message;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`重传失败: ${transfer.file.name}`, 'error');
+                }
+            }
+
+            // 查询最终状态
+            async queryFinalStatus(transfer) {
+                console.log(`查询最终传输状态: ${transfer.file.name}`);
+                
+                const statusRequest = {
+                    type: 'fileTransferStatusRequest',
+                    transferId: transfer.transferId,
+                    targetUserId: transfer.targetUserId
+                };
+
+                // 设置临时响应处理器
+                const originalHandler = transfer.handleStatusResponse;
+                transfer.handleStatusResponse = (statusMessage) => {
+                    transfer.handleStatusResponse = originalHandler;
+                    
+                    if (statusMessage.missingChunks.length === 0) {
+                        transfer.status = 'completed';
+                        transfer.progress = 100;
+                        this.updateTransferStatus();
+                        displaySystemMessage(`文件 "${transfer.file.name}" 传输完成`, 'success');
+                    } else {
+                        console.log(`仍有 ${statusMessage.missingChunks.length} 个分片缺失`);
+                        transfer.status = 'failed';
+                        transfer.error = `仍有${statusMessage.missingChunks.length}个分片缺失`;
+                        this.updateTransferStatus();
+                        displaySystemMessage(`传输未完成: ${transfer.file.name} (${statusMessage.missingChunks.length}个分片缺失)`, 'error');
+                    }
+                };
+
+                if (!this.safeSend(statusRequest, '查询最终状态失败')) {
+                    // 查询失败，假设传输完成
+                    transfer.status = 'completed';
+                    transfer.progress = 100;
+                    this.updateTransferStatus();
+                    displaySystemMessage(`文件 "${transfer.file.name}" 传输完成 (未能确认)`, 'success');
+                }
             }
 
             downloadFile(file) {
@@ -2688,6 +2845,9 @@
             videoInputEl.addEventListener('change', handleVideoSelect);
             voiceBtnEl.addEventListener('click', toggleVoiceRecording);
             liveVoiceBtnEl.addEventListener('click', toggleLiveVoice);
+
+            // 拖拽上传事件
+            setupDragAndDrop();
         }
 
         function getRoomIdFromUrl() {
@@ -2937,6 +3097,154 @@
             });
 
             event.target.value = '';
+        }
+
+        // 拖拽上传功能
+        function setupDragAndDrop() {
+            let dragCounter = 0;
+
+            // 防止默认的拖拽行为
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                chatAreaEl.addEventListener(eventName, preventDefaults, false);
+                document.body.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            // 拖拽进入
+            chatAreaEl.addEventListener('dragenter', (e) => {
+                dragCounter++;
+                if (dragCounter === 1) {
+                    chatAreaEl.classList.add('drag-over');
+                    dragOverlayEl.classList.add('active');
+                }
+            });
+
+            // 拖拽离开
+            chatAreaEl.addEventListener('dragleave', (e) => {
+                dragCounter--;
+                if (dragCounter === 0) {
+                    chatAreaEl.classList.remove('drag-over');
+                    dragOverlayEl.classList.remove('active');
+                }
+            });
+
+            // 拖拽悬停
+            chatAreaEl.addEventListener('dragover', (e) => {
+                // 更新拖拽图标
+                const items = e.dataTransfer.items;
+                let hasFiles = false;
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].kind === 'file') {
+                        hasFiles = true;
+                        break;
+                    }
+                }
+                
+                if (hasFiles) {
+                    dragOverlayEl.querySelector('.drag-icon').textContent = '📁';
+                    dragOverlayEl.querySelector('.drag-content div:nth-child(2)').textContent = '拖拽文件到这里上传';
+                } else {
+                    dragOverlayEl.querySelector('.drag-icon').textContent = '❌';
+                    dragOverlayEl.querySelector('.drag-content div:nth-child(2)').textContent = '不支持的内容类型';
+                }
+            });
+
+            // 文件放置
+            chatAreaEl.addEventListener('drop', (e) => {
+                dragCounter = 0;
+                chatAreaEl.classList.remove('drag-over');
+                dragOverlayEl.classList.remove('active');
+
+                const files = Array.from(e.dataTransfer.files);
+                if (files.length > 0) {
+                    handleDragDropFiles(files);
+                }
+            });
+        }
+
+        function handleDragDropFiles(files) {
+            if (files.length === 0) return;
+
+            // 检查是否有在线用户
+            const otherUsers = Array.from(users.keys()).filter(id => id !== userId);
+            if (otherUsers.length === 0) {
+                showNotification('没有其他在线用户', 'warning');
+                return;
+            }
+
+            // 分类文件
+            const imageFiles = files.filter(file => file.type.startsWith('image/'));
+            const videoFiles = files.filter(file => file.type.startsWith('video/'));
+            const otherFiles = files.filter(file => !file.type.startsWith('image/') && !file.type.startsWith('video/'));
+
+            let totalFiles = files.length;
+            let processedFiles = 0;
+
+            // 显示上传开始通知
+            showNotification(`开始上传 ${totalFiles} 个文件...`, 'info');
+
+            // 处理图片文件
+            imageFiles.forEach(file => {
+                if (otherUsers.length === 1) {
+                    sendFileToUser(otherUsers[0], file);
+                    // 为发送方显示媒体预览
+                    const mediaUrl = URL.createObjectURL(file);
+                    displayMediaMessage(userId, file, 'sent', null, mediaUrl);
+                } else {
+                    // 多用户时使用第一个用户或让用户选择
+                    sendFileToUser(otherUsers[0], file);
+                    const mediaUrl = URL.createObjectURL(file);
+                    displayMediaMessage(userId, file, 'sent', null, mediaUrl);
+                }
+                processedFiles++;
+                updateUploadProgress(processedFiles, totalFiles);
+            });
+
+            // 处理视频文件
+            videoFiles.forEach(file => {
+                if (otherUsers.length === 1) {
+                    sendFileToUser(otherUsers[0], file);
+                    // 为发送方显示媒体预览
+                    const mediaUrl = URL.createObjectURL(file);
+                    displayMediaMessage(userId, file, 'sent', null, mediaUrl);
+                } else {
+                    sendFileToUser(otherUsers[0], file);
+                    const mediaUrl = URL.createObjectURL(file);
+                    displayMediaMessage(userId, file, 'sent', null, mediaUrl);
+                }
+                processedFiles++;
+                updateUploadProgress(processedFiles, totalFiles);
+            });
+
+            // 处理其他文件
+            otherFiles.forEach(file => {
+                if (otherUsers.length === 1) {
+                    sendFileToUser(otherUsers[0], file);
+                } else {
+                    sendFileToUser(otherUsers[0], file);
+                }
+                processedFiles++;
+                updateUploadProgress(processedFiles, totalFiles);
+            });
+
+            // 如果有多个用户，显示提示
+            if (otherUsers.length > 1) {
+                setTimeout(() => {
+                    showNotification(`文件已发送给 ${getUserName(otherUsers[0])}，如需发送给其他用户请使用文件按钮`, 'info');
+                }, 1000);
+            }
+        }
+
+        function updateUploadProgress(processed, total) {
+            if (processed === total) {
+                setTimeout(() => {
+                    showNotification(`所有文件上传完成 (${total}/${total})`, 'success');
+                }, 500);
+            }
         }
 
         function sendMediaFile(file, mediaType) {
