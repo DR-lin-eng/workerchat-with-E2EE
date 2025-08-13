@@ -1238,6 +1238,35 @@
 
                 transfer.resumeTransfer = () => {
                     if (transfer.status === 'paused' && this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        transfer.status = 'querying_status';
+                        this.updateTransferStatus();
+                        displaySystemMessage(`查询接收端状态: ${file.name}`, 'info');
+
+                        // 询问接收端的接收状态
+                        const statusRequest = {
+                            type: 'fileTransferStatusRequest',
+                            transferId: transferId,
+                            targetUserId: transfer.targetUserId
+                        };
+
+                        if (this.safeSend(statusRequest, '查询接收状态失败')) {
+                            console.log(`查询接收端状态: ${transferId}`);
+                            
+                            // 设置超时，如果没有收到响应则使用本地状态恢复
+                            setTimeout(() => {
+                                if (transfer.status === 'querying_status') {
+                                    console.warn('查询接收状态超时，使用本地状态恢复');
+                                    this.resumeWithLocalState();
+                                }
+                            }, 5000); // 5秒超时
+                        } else {
+                            // 发送失败，直接使用本地状态恢复
+                            this.resumeWithLocalState();
+                        }
+                    }
+                    
+                    // 使用本地状态恢复传输
+                    const resumeWithLocalState = () => {
                         isTransferActive = true;
                         transfer.isActive = true;
                         transfer.status = 'sending';
@@ -1245,7 +1274,6 @@
                         displaySystemMessage(`继续传输文件: ${file.name}`, 'info');
 
                         // 精确计算下一个要发送的分片索引
-                        // 找到最大的已发送分片索引
                         let maxSentIndex = -1;
                         if (transfer.sentChunkSet && transfer.sentChunkSet.size > 0) {
                             for (const chunkIndex of transfer.sentChunkSet) {
@@ -1256,9 +1284,12 @@
                             nextChunkIndex = startChunkIndex;
                         }
                         
-                        console.log(`断点续传: 从分片 ${nextChunkIndex} 开始，已完成 ${transfer.sentChunkSet?.size || 0}/${transfer.totalChunks}`);
+                        console.log(`本地状态恢复: 从分片 ${nextChunkIndex} 开始，已完成 ${transfer.sentChunkSet?.size || 0}/${transfer.totalChunks}`);
                         sendChunksConcurrently();
-                    }
+                    };
+                    
+                    // 将方法绑定到transfer对象上
+                    transfer.resumeWithLocalState = resumeWithLocalState;
                 };
 
                 // 开始并发传输
@@ -1539,16 +1570,31 @@
                         
                         if (!config.isActive()) break;
                         
-                        // 准备批量发送的分片 - 跳过已发送的分片
+                        // 准备批量发送的分片 - 优先发送缺失分片
                         const batch = [];
-                        for (let i = 0; i < batchSize && nextChunkIndex < transfer.totalChunks; i++) {
-                            // 检查分片是否已经发送过（断点续传）
-                            if (!sentChunks.has(nextChunkIndex)) {
-                                batch.push(nextChunkIndex);
-                            } else {
-                                console.log(`跳过已发送的分片 ${nextChunkIndex}`);
+                        
+                        // 优先处理缺失分片
+                        if (transfer.missingChunks && transfer.missingChunks.size > 0) {
+                            const missingArray = Array.from(transfer.missingChunks);
+                            for (let i = 0; i < Math.min(batchSize, missingArray.length); i++) {
+                                const chunkIndex = missingArray[i];
+                                if (!sentChunks.has(chunkIndex)) {
+                                    batch.push(chunkIndex);
+                                    transfer.missingChunks.delete(chunkIndex);
+                                }
                             }
-                            nextChunkIndex = config.getNextChunkIndex();
+                            console.log(`优先重传缺失分片: ${batch.length}个, 剩余缺失: ${transfer.missingChunks.size}个`);
+                        } else {
+                            // 正常顺序发送
+                            for (let i = 0; i < batchSize && nextChunkIndex < transfer.totalChunks; i++) {
+                                // 检查分片是否已经发送过（断点续传）
+                                if (!sentChunks.has(nextChunkIndex)) {
+                                    batch.push(nextChunkIndex);
+                                } else {
+                                    console.log(`跳过已发送的分片 ${nextChunkIndex}`);
+                                }
+                                nextChunkIndex = config.getNextChunkIndex();
+                            }
                         }
                         
                         if (batch.length > 0) {
@@ -1906,6 +1952,88 @@
                 } else {
                     console.warn(`传输没有分片确认处理器:`, message.transferId);
                 }
+            }
+
+            // 处理状态查询请求（接收端）
+            handleTransferStatusRequest(message) {
+                const transfer = activeTransfers.get(message.transferId);
+                if (!transfer || transfer.type !== 'receive') {
+                    console.warn(`未找到接收传输:`, message.transferId);
+                    return;
+                }
+
+                console.log(`收到状态查询请求: ${message.transferId}`);
+
+                // 分析已接收的分片
+                const receivedChunks = Array.from(transfer.receivedChunks.keys()).sort((a, b) => a - b);
+                const totalChunks = transfer.metadata.totalChunks;
+                const missingChunks = [];
+
+                // 找出缺失的分片
+                for (let i = 0; i < totalChunks; i++) {
+                    if (!transfer.receivedChunks.has(i)) {
+                        missingChunks.push(i);
+                    }
+                }
+
+                // 发送状态响应
+                const statusResponse = {
+                    type: 'fileTransferStatusResponse',
+                    transferId: message.transferId,
+                    senderId: message.senderId,
+                    receivedChunks: receivedChunks,
+                    missingChunks: missingChunks,
+                    totalReceived: receivedChunks.length
+                };
+
+                console.log(`发送状态响应: 已接收${receivedChunks.length}/${totalChunks}, 缺失${missingChunks.length}个分片`);
+                this.safeSend(statusResponse, '发送状态响应失败');
+            }
+
+            // 处理状态查询响应（发送端）
+            handleTransferStatusResponse(message) {
+                const transfer = activeTransfers.get(message.transferId);
+                if (!transfer || transfer.type !== 'send') {
+                    console.warn(`未找到发送传输:`, message.transferId);
+                    return;
+                }
+
+                console.log(`收到状态响应: 已接收${message.totalReceived}个分片, 缺失${message.missingChunks.length}个分片`);
+
+                if (transfer.status === 'querying_status') {
+                    // 根据接收端状态精确恢复传输
+                    this.resumeWithReceiverStatus(transfer, message);
+                }
+            }
+
+            // 根据接收端状态恢复传输
+            resumeWithReceiverStatus(transfer, statusMessage) {
+                console.log(`精确恢复传输: ${transfer.file.name}`);
+                
+                // 更新本地已发送分片状态
+                transfer.sentChunkSet = new Set(statusMessage.receivedChunks);
+                transfer.sentChunks = statusMessage.totalReceived;
+                transfer.progress = Math.min((statusMessage.totalReceived / transfer.totalChunks) * 100, 100);
+
+                // 如果有缺失分片，优先重传缺失的分片
+                if (statusMessage.missingChunks.length > 0) {
+                    console.log(`需要重传 ${statusMessage.missingChunks.length} 个缺失分片:`, statusMessage.missingChunks.slice(0, 10));
+                    transfer.missingChunks = new Set(statusMessage.missingChunks);
+                } else {
+                    transfer.missingChunks = new Set();
+                }
+
+                // 恢复传输
+                transfer.status = 'sending';
+                transfer.isActive = true;
+                this.updateTransferStatus();
+                
+                // 调用恢复方法
+                if (transfer.resumeWithLocalState) {
+                    transfer.resumeWithLocalState();
+                }
+
+                displaySystemMessage(`精确恢复传输: ${transfer.file.name} (${statusMessage.totalReceived}/${transfer.totalChunks})`, 'success');
             }
 
             downloadFile(file) {
@@ -2275,6 +2403,12 @@
                     break;
                 case 'fileChunkAckNotification':
                     fileTransferManager.handleFileChunkAck(message);
+                    break;
+                case 'fileTransferStatusRequestNotification':
+                    fileTransferManager.handleTransferStatusRequest(message);
+                    break;
+                case 'fileTransferStatusResponseNotification':
+                    fileTransferManager.handleTransferStatusResponse(message);
                     break;
                 case 'voiceNotification':
                     handleVoiceMessage(message);

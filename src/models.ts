@@ -319,3 +319,34 @@ export interface FileTransferCancelNotification {
     transferId: string;
     senderId: string;
 }
+
+// 询问接收状态
+export interface FileTransferStatusRequest {
+    type: 'fileTransferStatusRequest';
+    transferId: string;
+    targetUserId: string;
+}
+
+export interface FileTransferStatusRequestNotification {
+    type: 'fileTransferStatusRequestNotification';
+    transferId: string;
+    senderId: string;
+}
+
+// 接收状态响应
+export interface FileTransferStatusResponse {
+    type: 'fileTransferStatusResponse';
+    transferId: string;
+    senderId: string;
+    receivedChunks: number[]; // 已接收的分片索引列表
+    missingChunks: number[];  // 缺失的分片索引列表
+    totalReceived: number;    // 已接收分片总数
+}
+
+export interface FileTransferStatusResponseNotification {
+    type: 'fileTransferStatusResponseNotification';
+    transferId: string;
+    receivedChunks: number[];
+    missingChunks: number[];
+    totalReceived: number;
+}
