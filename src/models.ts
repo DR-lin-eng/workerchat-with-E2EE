@@ -271,8 +271,9 @@ export interface FileTransferChunk {
     transferId: string;
     targetUserId: string;
     chunkIndex: number;
-    chunkData: number[];
+    chunkData: string;
     isLast: boolean;
+    requireAck?: boolean;
 }
 
 export interface FileTransferCancel {
@@ -303,13 +304,14 @@ export interface FileTransferResponseNotification {
     accepted: boolean;
 }
 
-export interface FileChunkNotification {
+export interface RealtimeFileChunkNotification {
     type: 'realtimeFileChunkNotification';
     transferId: string;
     senderId: string;
     chunkIndex: number;
-    chunkData: number[];
+    chunkData: string;
     isLast: boolean;
+    requireAck?: boolean;
 }
 
 export interface FileTransferCancelNotification {

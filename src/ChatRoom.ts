@@ -6,7 +6,7 @@ import {
     FileStatusRequest, FileStatusResponse, FileTransferProgress,
     FileTransferRequest, FileTransferResponse, FileTransferChunk, FileTransferCancel,
     FileTransferRequestNotification, FileTransferResponseNotification, 
-    FileChunkNotification, FileTransferCancelNotification
+    FileChunkNotification, RealtimeFileChunkNotification, FileTransferCancelNotification
 } from "./models";
 import {readKey} from "openpgp";
 
@@ -632,13 +632,14 @@ export class ChatRoom {
         }
 
         // 转发分片给目标用户
-        const notification: FileChunkNotification = {
+        const notification: RealtimeFileChunkNotification = {
             type: 'realtimeFileChunkNotification',
             transferId: message.transferId,
             senderId: sender.id,
             chunkIndex: message.chunkIndex,
             chunkData: message.chunkData,
-            isLast: message.isLast
+            isLast: message.isLast,
+            requireAck: message.requireAck
         };
 
         try {

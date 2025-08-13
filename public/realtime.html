@@ -1553,10 +1553,15 @@
             }
 
             handleFileChunk(message) {
+                console.log(`接收到分片消息:`, message);
                 const transfer = activeTransfers.get(message.transferId);
-                if (!transfer || transfer.type !== 'receive') return;
+                if (!transfer || transfer.type !== 'receive') {
+                    console.warn(`未找到接收传输:`, message.transferId, transfer?.type);
+                    return;
+                }
 
-                const { chunkIndex, chunkData, isLast, requireAck } = message;
+                const { chunkIndex, chunkData, isLast, requireAck, senderId } = message;
+                console.log(`处理分片 ${chunkIndex}, requireAck=${requireAck}, senderId=${senderId}`);
 
                 try {
                     // 验证分片数据
@@ -1575,10 +1580,13 @@
                             transferId: message.transferId,
                             chunkIndex,
                             success: true,
-                            senderId: message.senderId
+                            senderId: senderId || message.senderId // 使用解构的senderId
                         };
                         
+                        console.log(`发送分片 ${chunkIndex} 确认:`, ackMessage);
                         this.safeSend(ackMessage, `发送分片确认失败`);
+                    } else {
+                        console.log(`分片 ${chunkIndex} 不需要确认`);
                     }
 
                     this.updateTransferStatus();
@@ -1599,7 +1607,7 @@
                             chunkIndex,
                             success: false,
                             error: error.message,
-                            senderId: message.senderId
+                            senderId: senderId || message.senderId // 使用解构的senderId
                         };
                         
                         this.safeSend(ackMessage, `发送分片失败确认失败`);
@@ -1727,14 +1735,18 @@
 
             // 处理分片确认消息
             handleFileChunkAck(message) {
+                console.log(`收到分片确认:`, message);
                 const transfer = activeTransfers.get(message.transferId);
                 if (!transfer || transfer.type !== 'send') {
+                    console.warn(`未找到传输或类型不匹配:`, message.transferId, transfer?.type);
                     return;
                 }
 
                 // 如果传输有分片确认处理器，调用它
                 if (transfer.handleChunkAck) {
                     transfer.handleChunkAck(message.chunkIndex, message.success, message.error);
+                } else {
+                    console.warn(`传输没有分片确认处理器:`, message.transferId);
                 }
             }
 
