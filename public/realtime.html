@@ -1254,18 +1254,10 @@
                 sendChunksConcurrently();
             }
 
-            // 计算并发数 - 极速传输优化
+            // 计算并发数 - 固定2并发
             calculateConcurrency(totalChunks) {
-                // 根据文件大小动态调整并发数 - 大幅提升
-                if (totalChunks < 10) {
-                    return Math.min(10, totalChunks); // 小文件10并发
-                } else if (totalChunks < 50) {
-                    return Math.min(50, totalChunks); // 中等文件50并发
-                } else if (totalChunks < 200) {
-                    return Math.min(100, totalChunks); // 大文件100并发
-                } else {
-                    return Math.min(200, totalChunks); // 超大文件200并发
-                }
+                // 统一使用2并发，确保稳定性
+                return Math.min(2, totalChunks);
             }
 
             // 更新带宽监控
@@ -1358,11 +1350,11 @@
             async sendChunkWorker(transfer, transferId, config) {
                 const file = transfer.file;
                 
-                // 传输模式配置 - 极速优化
+                // 传输模式配置 - 稳定优先
                 const isFastMode = true; // 默认使用高速模式
-                const maxConcurrentChunks = isFastMode ? 200 : 1; // 高速模式200并发，慢速模式1并发
-                const batchSize = 50; // 批量发送大小提升到50
-                const retryDelay = 100; // 重试延迟减少到100ms
+                const maxConcurrentChunks = 2; // 2并发，确保稳定性
+                const batchSize = 5; // 批量发送大小调整为5
+                const retryDelay = 100; // 重试延迟100ms
                 
                 // 传输状态跟踪
                 const sentChunks = new Set(); // 已发送的分片
@@ -1371,12 +1363,19 @@
                 let activeSends = 0; // 当前活跃的发送操作
                 let nextChunkIndex = config.getNextChunkIndex();
                 
-                console.log(`启动${isFastMode ? '高速' : '慢速'}传输模式，并发数: ${maxConcurrentChunks}`);
+                console.log(`启动稳定传输模式，并发数: ${maxConcurrentChunks}`);
+
+                // 速度控制 - 每秒10个分片
+                const targetChunksPerSecond = 10;
+                const chunkInterval = 1000 / targetChunksPerSecond; // 100ms间隔
+                let lastChunkTime = 0;
+                let chunksSentInCurrentSecond = 0;
+                let currentSecondStart = Date.now();
 
                 // 网络状态监控
                 let networkHealthy = true;
                 let consecutiveFailures = 0;
-                const maxConsecutiveFailures = 5;
+                const maxConsecutiveFailures = 20; // 增加容忍度，避免过早判断网络不佳
 
                 // 设置分片确认处理器（仅用于重传模式）
                 transfer.handleChunkAck = (chunkIndex, success, error) => {
@@ -1426,7 +1425,7 @@
                             // 检查缓冲区状态
                             if (this.websocket.bufferedAmount > 2 * 1024 * 1024) { // 2MB缓冲区限制
                                 console.warn(`WebSocket缓冲区过大，等待清空...`);
-                                await this.waitForBufferClear();
+                                await waitForBufferClear();
                             }
 
                             // 发送分片
@@ -1437,8 +1436,36 @@
                                 // 更新进度
                                 config.onChunkSent(chunkIndex);
                                 
-                                // 移除延迟，最大化传输速度
-                                // await new Promise(resolve => setTimeout(resolve, 1));
+                                // 速度控制 - 每秒10个分片
+                                const now = Date.now();
+                                
+                                // 检查是否进入新的一秒
+                                if (now - currentSecondStart >= 1000) {
+                                    currentSecondStart = now;
+                                    chunksSentInCurrentSecond = 0;
+                                }
+                                
+                                chunksSentInCurrentSecond++;
+                                
+                                // 如果当前秒内已发送10个分片，等待到下一秒
+                                if (chunksSentInCurrentSecond >= targetChunksPerSecond) {
+                                    const waitTime = 1000 - (now - currentSecondStart);
+                                    if (waitTime > 0) {
+                                        console.log(`已发送${chunksSentInCurrentSecond}个分片，等待${waitTime}ms到下一秒`);
+                                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                                        currentSecondStart = Date.now();
+                                        chunksSentInCurrentSecond = 0;
+                                    }
+                                } else {
+                                    // 分片间隔控制
+                                    const timeSinceLastChunk = now - lastChunkTime;
+                                    if (timeSinceLastChunk < chunkInterval) {
+                                        const waitTime = chunkInterval - timeSinceLastChunk;
+                                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                                    }
+                                }
+                                
+                                lastChunkTime = Date.now();
                                 
                             } else {
                                 throw new Error('WebSocket发送失败');
@@ -1451,10 +1478,13 @@
                             // 如果连续失败过多，切换到慢速模式
                             if (consecutiveFailures >= maxConsecutiveFailures) {
                                 networkHealthy = false;
-                                console.warn(`连续失败${consecutiveFailures}次，网络状况不佳`);
+                                console.warn(`连续失败${consecutiveFailures}次，网络状况不佳，降低传输速度`);
                             }
                             
                             console.error(`分片 ${chunkIndex} 发送失败:`, error.message);
+                            
+                            // 发送失败时短暂延迟，避免过度重试
+                            await new Promise(resolve => setTimeout(resolve, 50));
                         } finally {
                             activeSends--;
                         }
@@ -1483,9 +1513,9 @@
                     
                     // 第一阶段：批量高速发送
                     while (config.isActive() && nextChunkIndex !== null && nextChunkIndex < transfer.totalChunks) {
-                        // 控制并发数 - 减少等待时间
+                        // 控制并发数 - 固定2并发
                         while (activeSends >= maxConcurrentChunks && config.isActive()) {
-                            await new Promise(resolve => setTimeout(resolve, 1)); // 1ms快速检查
+                            await new Promise(resolve => setTimeout(resolve, 5)); // 5ms检查间隔
                         }
                         
                         if (!config.isActive()) break;
