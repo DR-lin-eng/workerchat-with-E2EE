@@ -1568,9 +1568,9 @@
                 
                 console.log(`启动稳定传输模式，并发数: ${maxConcurrentChunks}`);
 
-                // 速度控制 - 每秒10个分片
-                const targetChunksPerSecond = 10;
-                const chunkInterval = 1000 / targetChunksPerSecond; // 100ms间隔
+                // 速度控制 - 每秒5个分片
+                const targetChunksPerSecond = 5;
+                const chunkInterval = 1000 / targetChunksPerSecond; // 200ms间隔
                 let lastChunkTime = 0;
                 let chunksSentInCurrentSecond = 0;
                 let currentSecondStart = Date.now();
@@ -1639,7 +1639,7 @@
                                 // 更新进度
                                 config.onChunkSent(chunkIndex);
                                 
-                                // 速度控制 - 每秒10个分片
+                                // 速度控制 - 每秒5个分片
                                 const now = Date.now();
                                 
                                 // 检查是否进入新的一秒
@@ -1650,7 +1650,7 @@
                                 
                                 chunksSentInCurrentSecond++;
                                 
-                                // 如果当前秒内已发送10个分片，等待到下一秒
+                                // 如果当前秒内已发送5个分片，等待到下一秒
                                 if (chunksSentInCurrentSecond >= targetChunksPerSecond) {
                                     const waitTime = 1000 - (now - currentSecondStart);
                                     if (waitTime > 0) {
@@ -1660,7 +1660,7 @@
                                         chunksSentInCurrentSecond = 0;
                                     }
                                 } else {
-                                    // 分片间隔控制
+                                    // 分片间隔控制 - 200ms间隔
                                     const timeSinceLastChunk = now - lastChunkTime;
                                     if (timeSinceLastChunk < chunkInterval) {
                                         const waitTime = chunkInterval - timeSinceLastChunk;
@@ -2050,16 +2050,27 @@
                 return btoa(binary);
             }
 
-            // 高效的Base64到ArrayBuffer转换
+            // 高效的Base64到ArrayBuffer转换 - 优化版本
             base64ToArrayBuffer(base64) {
-                const binaryString = atob(base64);
-                const bytes = new Uint8Array(binaryString.length);
-                
-                for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
+                try {
+                    // 使用现代浏览器的优化方法
+                    const binaryString = atob(base64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    
+                    // 批量处理，减少循环开销
+                    const batchSize = 1024; // 每批处理1KB
+                    for (let i = 0; i < binaryString.length; i += batchSize) {
+                        const end = Math.min(i + batchSize, binaryString.length);
+                        for (let j = i; j < end; j++) {
+                            bytes[j] = binaryString.charCodeAt(j);
+                        }
+                    }
+                    
+                    return bytes;
+                } catch (error) {
+                    console.error('Base64解码失败:', error);
+                    throw new Error('Base64解码失败');
                 }
-                
-                return bytes;
             }
 
             // 异步读取分片数据 - 使用Base64编码
@@ -2084,50 +2095,48 @@
             }
 
             handleFileChunk(message) {
-                console.log(`接收到分片消息:`, message);
                 const transfer = activeTransfers.get(message.transferId);
                 if (!transfer || transfer.type !== 'receive') {
-                    console.warn(`未找到接收传输:`, message.transferId, transfer?.type);
-                    return;
+                    return; // 快速返回，减少日志
                 }
 
                 const { chunkIndex, chunkData, isLast, requireAck, senderId } = message;
-                console.log(`处理分片 ${chunkIndex}, requireAck=${requireAck}, senderId=${senderId}`);
 
                 try {
-                    // 验证分片数据
-                    if (!chunkData || typeof chunkData !== 'string') {
-                        throw new Error('Invalid chunk data');
-                    }
-
-                    // 存储分片（检查是否重复）
-                    if (transfer.receivedChunks.has(chunkIndex)) {
-                        console.warn(`收到重复分片 ${chunkIndex}，忽略`);
-                        return; // 忽略重复分片
+                    // 快速验证和存储
+                    if (!chunkData || transfer.receivedChunks.has(chunkIndex)) {
+                        return; // 快速返回，忽略无效或重复分片
                     }
                     
+                    // 直接存储，减少验证开销
                     transfer.receivedChunks.set(chunkIndex, chunkData);
-                    transfer.progress = Math.min((transfer.receivedChunks.size / transfer.metadata.totalChunks) * 100, 100);
-
-                    // 发送分片确认（仅在重传模式下需要）
-                    if (requireAck) {
-                        const ackMessage = {
-                            type: 'fileChunkAck',
-                            transferId: message.transferId,
-                            chunkIndex,
-                            success: true,
-                            senderId: senderId || message.senderId
-                        };
-                        
-                        console.log(`发送重传分片 ${chunkIndex} 确认`);
-                        this.safeSend(ackMessage, `发送分片确认失败`);
+                    
+                    // 批量更新进度（每10个分片更新一次）
+                    if (transfer.receivedChunks.size % 10 === 0 || transfer.receivedChunks.size === transfer.metadata.totalChunks) {
+                        transfer.progress = Math.min((transfer.receivedChunks.size / transfer.metadata.totalChunks) * 100, 100);
+                        this.updateTransferStatus();
                     }
 
-                    this.updateTransferStatus();
+                    // 异步发送确认，不阻塞接收
+                    if (requireAck) {
+                        setTimeout(() => {
+                            const ackMessage = {
+                                type: 'fileChunkAck',
+                                transferId: message.transferId,
+                                chunkIndex,
+                                success: true,
+                                senderId: senderId || message.senderId
+                            };
+                            this.safeSend(ackMessage, `发送分片确认失败`);
+                        }, 0);
+                    }
 
                     // 检查是否接收完成
                     if (transfer.receivedChunks.size === transfer.metadata.totalChunks) {
-                        this.assembleReceivedFile(transfer, message.transferId);
+                        // 异步组装文件，不阻塞后续分片接收
+                        setTimeout(() => {
+                            this.assembleReceivedFile(transfer, message.transferId);
+                        }, 0);
                     }
 
                 } catch (error) {
@@ -2156,34 +2165,68 @@
 
             async assembleReceivedFile(transfer, transferId) {
                 try {
-                    const chunks = [];
+                    console.log(`开始组装文件: ${transfer.metadata.fileName} (${transfer.metadata.totalChunks}个分片)`);
+                    transfer.status = 'assembling';
+                    this.updateTransferStatus();
 
-                    // 按顺序组装分片
-                    for (let i = 0; i < transfer.metadata.totalChunks; i++) {
-                        const base64Data = transfer.receivedChunks.get(i);
-                        if (!base64Data) {
-                            throw new Error(`Missing chunk ${i}`);
+                    // 分批解码Base64，避免阻塞主线程
+                    const chunks = [];
+                    const batchSize = 50; // 每批处理50个分片
+                    
+                    for (let batchStart = 0; batchStart < transfer.metadata.totalChunks; batchStart += batchSize) {
+                        const batchEnd = Math.min(batchStart + batchSize, transfer.metadata.totalChunks);
+                        
+                        // 批量解码
+                        const batchChunks = [];
+                        for (let i = batchStart; i < batchEnd; i++) {
+                            const base64Data = transfer.receivedChunks.get(i);
+                            if (!base64Data) {
+                                throw new Error(`Missing chunk ${i}`);
+                            }
+                            const chunkData = this.base64ToArrayBuffer(base64Data);
+                            batchChunks.push(chunkData);
                         }
-                        // 使用高效的Base64解码方法
-                        const chunkData = this.base64ToArrayBuffer(base64Data);
-                        chunks.push(chunkData);
+                        
+                        chunks.push(...batchChunks);
+                        
+                        // 让出主线程，避免阻塞UI
+                        if (batchEnd < transfer.metadata.totalChunks) {
+                            await new Promise(resolve => setTimeout(resolve, 0));
+                        }
                     }
 
-                    // 合并所有分片
+                    console.log(`Base64解码完成，开始合并文件...`);
+
+                    // 计算总大小
                     const totalSize = chunks.reduce((size, chunk) => size + chunk.length, 0);
                     const fileData = new Uint8Array(totalSize);
                     let offset = 0;
 
-                    for (const chunk of chunks) {
-                        fileData.set(chunk, offset);
-                        offset += chunk.length;
+                    // 分批合并，避免阻塞
+                    const mergeBatchSize = 100; // 每批合并100个分片
+                    for (let batchStart = 0; batchStart < chunks.length; batchStart += mergeBatchSize) {
+                        const batchEnd = Math.min(batchStart + mergeBatchSize, chunks.length);
+                        
+                        for (let i = batchStart; i < batchEnd; i++) {
+                            fileData.set(chunks[i], offset);
+                            offset += chunks[i].length;
+                        }
+                        
+                        // 让出主线程
+                        if (batchEnd < chunks.length) {
+                            await new Promise(resolve => setTimeout(resolve, 0));
+                        }
                     }
 
-                    // 验证文件完整性
+                    console.log(`文件合并完成，开始验证完整性...`);
+
+                    // 异步验证文件完整性
                     const receivedHash = await this.calculateMD5FromBuffer(fileData.buffer);
                     if (receivedHash !== transfer.metadata.fileHash) {
                         throw new Error('File integrity check failed');
                     }
+
+                    console.log(`文件完整性验证通过，创建文件对象...`);
 
                     // 创建文件对象
                     const blob = new Blob([fileData], { type: transfer.metadata.fileType });
@@ -2459,6 +2502,18 @@
             }
 
             updateTransferStatus() {
+                // 节流更新，避免过于频繁的DOM操作
+                if (this.updateTransferStatusTimeout) {
+                    return; // 如果已经有待执行的更新，跳过
+                }
+                
+                this.updateTransferStatusTimeout = setTimeout(() => {
+                    this.updateTransferStatusTimeout = null;
+                    this.doUpdateTransferStatus();
+                }, 100); // 100ms节流
+            }
+
+            doUpdateTransferStatus() {
                 if (activeTransfers.size === 0) {
                     transferStatusEl.classList.remove('show');
                     return;
@@ -2543,6 +2598,7 @@
                     'preparing': '准备发送',
                     'sending': '发送中',
                     'receiving': '接收中',
+                    'assembling': '组装文件',
                     'waiting_confirmation': '等待确认',
                     'querying_status': '查询状态',
                     'checking_missing': '检测丢包',
